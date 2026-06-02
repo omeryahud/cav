@@ -21,6 +21,9 @@ import (
 // previewMinWidth is the terminal width below which the preview pane is hidden.
 const previewMinWidth = 100
 
+// recentDays bounds how far back non-live on-disk sessions are shown.
+const recentDays = 7
+
 type mode int
 
 const (
@@ -67,8 +70,10 @@ type Model struct {
 	view     []claude.Session  // filtered/searched subset shown
 	roster   claude.Roster     // sessionId -> job id (attachable iff present)
 	states   map[string]string // sessionId -> job lifecycle state (working/done/blocked)
-	names    *names.Store      // cav-local display-name overrides
-	group    bool              // true: group by cwd then status; false: manual order
+	names       *names.Store // cav-local display-name overrides
+	group       bool            // true: group by cwd then status; false: manual order
+	showStopped bool            // include stopped sessions (hidden by default)
+	justStopped map[string]bool // optimistically hidden right after a stop
 	cursor   int
 	order    *order.Store
 	mode     mode
@@ -111,9 +116,10 @@ func New() (*Model, error) {
 		group:     true,
 		previewOn: true,
 		prevCache: map[string]string{},
-		prevReq:   map[string]bool{},
-		states:    map[string]string{},
-		last:      map[string]lastMsg{},
+		prevReq:     map[string]bool{},
+		states:      map[string]string{},
+		last:        map[string]lastMsg{},
+		justStopped: map[string]bool{},
 	}, nil
 }
 
@@ -127,19 +133,56 @@ func (m *Model) Init() tea.Cmd {
 func refreshCmd() tea.Msg {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	ss, err := claude.List(ctx)
-	if err != nil {
-		return errMsg{err}
+	live, _ := claude.List(ctx) // ignore errors: still show durable on-disk jobs
+	daemon := claude.LoadRoster()
+
+	roster := claude.Roster{}
+	states := map[string]string{}
+	seen := map[string]bool{}
+	liveJobs := map[string]bool{}
+	var sessions []claude.Session
+
+	// 1) Live sessions — resolve job ids from the daemon roster, which holds the
+	//    CURRENT sessionId even after a /branch (a job's state.json can lag).
+	for _, s := range live {
+		sessions = append(sessions, s)
+		seen[s.SessionID] = true
+		if jid := daemon[s.SessionID]; jid != "" {
+			roster[s.SessionID] = jid
+			states[s.SessionID] = claude.JobState(jid)
+			liveJobs[jid] = true
+		}
 	}
-	r := claude.LoadRoster()
-	states := make(map[string]string, len(ss))
-	last := make(map[string]lastMsg, len(ss))
-	for _, s := range ss {
-		states[s.SessionID] = claude.JobState(r[s.SessionID])
+
+	// 2) On-disk jobs the daemon isn't currently serving (stopped, or dropped
+	//    after a laptop sleep). Dedup by sessionId and by job id — a branched
+	//    session shares its job with a live one, so skip that stale record.
+	cutoff := time.Now().Add(-recentDays * 24 * time.Hour)
+	for _, j := range claude.ScanJobs() {
+		if seen[j.SessionID] || liveJobs[j.JobID] {
+			continue
+		}
+		if !j.UpdatedAt.IsZero() && j.UpdatedAt.Before(cutoff) {
+			continue // prune old, non-live jobs to bound clutter
+		}
+		sessions = append(sessions, claude.Session{
+			SessionID: j.SessionID,
+			CWD:       j.CWD,
+			Name:      j.Name,
+			Kind:      "background",
+			StartedAt: j.UpdatedAt.UnixMilli(),
+		})
+		roster[j.SessionID] = j.JobID
+		states[j.SessionID] = j.State
+		seen[j.SessionID] = true
+	}
+
+	last := make(map[string]lastMsg, len(sessions))
+	for _, s := range sessions {
 		role, text := preview.Last(s.SessionID)
 		last[s.SessionID] = lastMsg{role: role, text: text}
 	}
-	return refreshResult{sessions: ss, roster: r, states: states, last: last}
+	return refreshResult{sessions: sessions, roster: roster, states: states, last: last}
 }
 
 func tickCmd() tea.Cmd {
@@ -250,13 +293,9 @@ func (m *Model) displayName(s claude.Session) string {
 func (m *Model) showPreview() bool { return m.previewOn && m.width >= previewMinWidth }
 
 // previewWidth is the column width used for the preview pane (and the wrap
-// width markdown is rendered at).
+// width markdown is rendered at) — half the screen.
 func (m *Model) previewWidth() int {
-	pw := m.width / 2
-	if pw > 60 {
-		pw = 60
-	}
-	return pw
+	return m.width / 2
 }
 
 // ensurePreview lazily loads the selected session's transcript preview.
@@ -374,6 +413,9 @@ func (m *Model) recompute() {
 		if m.filter != "" && !m.sessionMatches(s, m.filter) {
 			continue
 		}
+		if !m.showStopped && (m.statusOf(s) == "stopped" || m.justStopped[s.SessionID]) {
+			continue // stopped (or just-stopped) sessions hidden until toggled (s)
+		}
 		v = append(v, s)
 	}
 	if m.group {
@@ -382,7 +424,7 @@ func (m *Model) recompute() {
 			if a.CWD != b.CWD {
 				return a.CWD < b.CWD
 			}
-			if ra, rb := statusRank(m.effectiveStatus(a)), statusRank(m.effectiveStatus(b)); ra != rb {
+			if ra, rb := statusRank(m.statusOf(a)), statusRank(m.statusOf(b)); ra != rb {
 				return ra < rb
 			}
 			return a.StartedAt > b.StartedAt
@@ -392,27 +434,50 @@ func (m *Model) recompute() {
 	m.cursor = clamp(m.cursor, 0, lastIndex(len(v)))
 }
 
-// effectiveStatus prefers the rich job state; falls back to the agents --json status.
-func (m *Model) effectiveStatus(s claude.Session) string {
-	if st := m.states[s.SessionID]; st != "" {
-		return st
+// statusOf computes a normalized session status by combining the live
+// agents --json status (busy/idle) with the job lifecycle state. Crucially,
+// state "working" only means the session is alive — NOT that it is executing;
+// only agents-status "busy" (or an in-flight task) means actually running. So
+// an idle session reads "idle", not "running".
+func (m *Model) statusOf(s claude.Session) string {
+	if s.Status == "busy" {
+		return "running"
 	}
-	return s.Status
+	switch m.states[s.SessionID] {
+	case "blocked", "waiting", "needs_input", "needs input", "paused":
+		return "waiting"
+	case "error", "failed":
+		return "error"
+	case "done", "complete", "completed":
+		return "complete"
+	case "stopped":
+		return "stopped"
+	case "working", "running", "active", "ready", "idle":
+		return "idle"
+	}
+	if s.Status == "idle" {
+		return "idle"
+	}
+	return "" // interactive / unknown
 }
 
-// statusRank orders the status buckets: running, waiting, complete, error, other.
-func statusRank(state string) int {
-	switch strings.ToLower(state) {
-	case "working", "running", "busy", "active":
+// statusRank orders the status buckets. Input is a normalized status from statusOf.
+func statusRank(status string) int {
+	switch status {
+	case "running":
 		return 0
-	case "blocked", "waiting", "needs_input", "needs input", "paused":
+	case "waiting":
 		return 1
-	case "done", "complete", "completed", "idle", "ready":
+	case "error":
 		return 2
-	case "error", "failed":
+	case "idle":
 		return 3
-	default:
+	case "complete":
 		return 4
+	case "stopped":
+		return 5
+	default:
+		return 6
 	}
 }
 
@@ -423,9 +488,13 @@ func bucketLabel(rank int) string {
 	case 1:
 		return "waiting for input"
 	case 2:
-		return "complete"
-	case 3:
 		return "error"
+	case 3:
+		return "idle"
+	case 4:
+		return "complete"
+	case 5:
+		return "stopped"
 	default:
 		return "other"
 	}

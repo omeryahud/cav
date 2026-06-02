@@ -28,6 +28,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.roster = msg.roster
 		m.states = msg.states
 		m.last = msg.last
+		// Drop optimistic stop-hides once confirmed (state is stopped) or the
+		// session is gone; statusOf then keeps genuinely-stopped ones hidden.
+		if len(m.justStopped) > 0 {
+			present := make(map[string]bool, len(msg.sessions))
+			for _, s := range msg.sessions {
+				present[s.SessionID] = true
+			}
+			for sid := range m.justStopped {
+				if !present[sid] || m.states[sid] == "stopped" {
+					delete(m.justStopped, sid)
+				}
+			}
+		}
 		m.recompute()
 		// Keep the selected session's preview fresh: reload it each tick and
 		// overwrite the cache silently (no "loading…" flicker).
@@ -120,6 +133,9 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.previewOn = !m.previewOn
 	case "o":
 		m.group = !m.group
+		m.recompute()
+	case "s":
+		m.showStopped = !m.showStopped
 		m.recompute()
 	case "r":
 		m.status = "refreshing…"
@@ -269,7 +285,9 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s == nil {
 			return m, nil
 		}
+		m.justStopped[s.SessionID] = true // hide now; refresh reconciles once state.json updates
 		m.status = "stopping " + m.displayName(*s) + "…"
+		m.recompute()
 		return m, stopCmd(m.jobID(s))
 	default:
 		m.mode = modeList

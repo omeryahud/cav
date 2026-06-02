@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // Roster maps a full sessionId to its job id — the identifier that
@@ -15,7 +16,11 @@ import (
 // 8-char prefix, but NOT always (e.g. respawned or busy sessions: 72cdfc0f
 // lives under job cc12801d), so we read the authoritative daemon roster
 // instead of guessing from the session id.
+// Roster maps a full sessionId to its job id (the id attach/stop/logs expect).
 type Roster map[string]string
+
+// JobID returns the attachable job id for s, or "" if s is not attachable.
+func (r Roster) JobID(s Session) string { return r[s.SessionID] }
 
 type rosterFile struct {
 	Workers map[string]struct {
@@ -23,9 +28,10 @@ type rosterFile struct {
 	} `json:"workers"`
 }
 
-// LoadRoster reads ~/.claude/daemon/roster.json. Sessions absent from the
-// roster (interactive sessions, anything the daemon isn't supervising) are
-// not attachable and won't appear in the returned map.
+// LoadRoster maps each live daemon worker's CURRENT sessionId to its job id
+// (~/.claude/daemon/roster.json). Authoritative for live sessions — notably
+// after a /branch or fork, where a job's state.json may still carry the
+// original sessionId while the roster tracks the new one.
 func LoadRoster() Roster {
 	r := Roster{}
 	h, err := os.UserHomeDir()
@@ -37,7 +43,7 @@ func LoadRoster() Roster {
 		return r
 	}
 	var rf rosterFile
-	if err := json.Unmarshal(b, &rf); err != nil {
+	if json.Unmarshal(b, &rf) != nil {
 		return r
 	}
 	for jobID, w := range rf.Workers {
@@ -48,12 +54,7 @@ func LoadRoster() Roster {
 	return r
 }
 
-// JobID returns the attachable job id for s, or "" if s is not attachable.
-func (r Roster) JobID(s Session) string { return r[s.SessionID] }
-
-// JobState returns a job's lifecycle state from ~/.claude/jobs/<jobID>/state.json
-// — "working", "done", "blocked", etc. — or "" if unavailable. This is richer
-// than the coarse idle/busy in `agents --json`.
+// JobState returns a job's lifecycle state from ~/.claude/jobs/<jobID>/state.json.
 func JobState(jobID string) string {
 	if jobID == "" {
 		return ""
@@ -73,6 +74,55 @@ func JobState(jobID string) string {
 		return ""
 	}
 	return st.State
+}
+
+// JobRecord is a session's durable on-disk job record (~/.claude/jobs/<jobId>/state.json).
+type JobRecord struct {
+	JobID     string
+	SessionID string
+	CWD       string
+	Name      string
+	State     string // working | done | blocked | stopped | ...
+	UpdatedAt time.Time
+}
+
+// ScanJobs reads all on-disk job records. Unlike `agents --json` (which lists
+// only live daemon workers) this survives the daemon dropping workers after a
+// laptop sleep, so cav keeps showing sessions that are still resumable. The job
+// directory name is the job id that attach/stop/logs key on.
+func ScanJobs() []JobRecord {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	matches, _ := filepath.Glob(filepath.Join(h, ".claude", "jobs", "*", "state.json"))
+	out := make([]JobRecord, 0, len(matches))
+	for _, p := range matches {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var st struct {
+			SessionID string `json:"sessionId"`
+			CWD       string `json:"cwd"`
+			Name      string `json:"name"`
+			State     string `json:"state"`
+			UpdatedAt string `json:"updatedAt"`
+		}
+		if json.Unmarshal(b, &st) != nil || st.SessionID == "" {
+			continue
+		}
+		ts, _ := time.Parse(time.RFC3339, st.UpdatedAt) // zero on failure → treated as recent
+		out = append(out, JobRecord{
+			JobID:     filepath.Base(filepath.Dir(p)),
+			SessionID: st.SessionID,
+			CWD:       st.CWD,
+			Name:      st.Name,
+			State:     st.State,
+			UpdatedAt: ts,
+		})
+	}
+	return out
 }
 
 // Bin is the claude executable name; override with $CLAUDE_BIN.

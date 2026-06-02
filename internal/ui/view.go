@@ -30,11 +30,13 @@ var (
 	cwdPath     = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Faint(true) // "smaller" = faint
 	statHeader  = lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Italic(true)
 
-	// status sub-header colors (match the row dots)
+	// status dot + sub-header colors (kept in sync)
+	doneDot = lipgloss.NewStyle().Foreground(lipgloss.Color("71"))               // complete ✓
 	runHdr  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Italic(true)  // running
 	waitHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Italic(true) // waiting for input
-	doneHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true) // complete
 	errHdr  = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Italic(true) // error
+	idleHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true) // idle
+	doneHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("71")).Italic(true)  // complete
 
 	// preview role labels (user vs assistant); message bodies are markdown-rendered
 	userLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
@@ -79,15 +81,19 @@ func renderSnippets(snips []preview.Snippet, width int) string {
 func bucketStyle(rank int) lipgloss.Style {
 	switch rank {
 	case 0:
-		return runHdr
+		return runHdr // running
 	case 1:
-		return waitHdr
+		return waitHdr // waiting for input
 	case 2:
-		return doneHdr
+		return errHdr // error
 	case 3:
-		return errHdr
+		return idleHdr // idle
+	case 4:
+		return doneHdr // complete
+	case 5:
+		return statHeader // stopped
 	default:
-		return statHeader
+		return statHeader // other
 	}
 }
 
@@ -159,6 +165,17 @@ func (m *Model) indicators() string {
 	if !m.group {
 		parts = append(parts, "manual-order")
 	}
+	if !m.showStopped {
+		n := 0
+		for _, s := range m.all {
+			if m.statusOf(s) == "stopped" {
+				n++
+			}
+		}
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("%d stopped hidden (s)", n))
+		}
+	}
 	if m.previewOn && m.width < previewMinWidth {
 		parts = append(parts, "preview:too-narrow")
 	}
@@ -211,7 +228,7 @@ func (m *Model) groupedVisual(width int) ([]string, int) {
 			lines = append(lines, cwdPath.Render("  "+truncate(homeShorten(clean), width-2)))
 			lastCWD, lastRank = s.CWD, -1
 		}
-		if r := statusRank(m.effectiveStatus(s)); r != lastRank {
+		if r := statusRank(m.statusOf(s)); r != lastRank {
 			lines = append(lines, bucketStyle(r).Render("  "+bucketLabel(r)))
 			lastRank = r
 		}
@@ -228,7 +245,7 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 	if sel {
 		marker = cursorStyle.Render("▸ ")
 	}
-	st := m.effectiveStatus(s)
+	st := m.statusOf(s)
 	msg := m.last[s.SessionID].text
 	if msg == "" {
 		msg = "—"
@@ -321,9 +338,9 @@ func (m *Model) footerBlock() string {
 func (m *Model) helpBar() string {
 	binds := []struct{ k, d string }{
 		{"↑/↓", "move"}, {"↵/→", "open"}, {"n", "new"}, {"R", "rename"},
-		{"d", "delete"}, {"l", "logs"}, {"o", "group"}, {"J/K", "reorder"},
-		{"p", "preview"}, {"/", "filter"}, {"f", "search"}, {"esc", "clear"},
-		{"r", "refresh"}, {"q", "quit"},
+		{"d", "delete"}, {"l", "logs"}, {"o", "group"}, {"s", "stopped"},
+		{"J/K", "reorder"}, {"p", "preview"}, {"/", "filter"}, {"f", "search"},
+		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
 	}
 	parts := make([]string, len(binds))
 	for i, b := range binds {
@@ -421,26 +438,30 @@ func wrapJoin(parts []string, sep string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func statusDotFor(state string) string {
-	switch statusRank(state) {
-	case 0: // running
+func statusDotFor(status string) string {
+	switch status {
+	case "running":
 		return workDot.Render("●")
-	case 1: // waiting for input
+	case "waiting":
 		return warnDot.Render("◆")
-	case 2: // complete
-		return idleDot.Render("○")
-	case 3: // error
+	case "error":
 		return errStyle.Render("✗")
-	default: // other / interactive
+	case "idle":
+		return idleDot.Render("○")
+	case "complete":
+		return doneDot.Render("✓")
+	case "stopped":
+		return dimStyle.Render("◌")
+	default: // interactive / unknown
 		return dimStyle.Render("·")
 	}
 }
 
-func statusLabelFor(state string) string {
-	if state == "" {
+func statusLabelFor(status string) string {
+	if status == "" {
 		return "-"
 	}
-	return state
+	return status
 }
 
 func humanAge(t time.Time) string {
