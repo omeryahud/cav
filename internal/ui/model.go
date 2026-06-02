@@ -72,8 +72,8 @@ type Model struct {
 	states   map[string]string // sessionId -> job lifecycle state (working/done/blocked)
 	names       *names.Store // cav-local display-name overrides
 	group       bool            // true: group by cwd then status; false: manual order
-	showStopped bool            // include stopped sessions (hidden by default)
-	justStopped map[string]bool // optimistically hidden right after a stop
+	stoppedView bool            // true: showing the stopped-sessions window (s toggles)
+	justStopped map[string]bool // just stopped from the main window; kept in the stopped window until reconciled
 	cursor   int
 	order    *order.Store
 	mode     mode
@@ -413,8 +413,8 @@ func (m *Model) recompute() {
 		if m.filter != "" && !m.sessionMatches(s, m.filter) {
 			continue
 		}
-		if !m.showStopped && (m.statusOf(s) == "stopped" || m.justStopped[s.SessionID]) {
-			continue // stopped (or just-stopped) sessions hidden until toggled (s)
+		if m.isStopped(s) != m.stoppedView {
+			continue // main window shows active sessions; the stopped window shows stopped ones (s toggles)
 		}
 		v = append(v, s)
 	}
@@ -459,6 +459,24 @@ func (m *Model) statusOf(s claude.Session) string {
 		return "idle"
 	}
 	return "" // interactive / unknown
+}
+
+// isStopped reports whether s belongs in the stopped-sessions window: either its
+// job state is "stopped", or it was just stopped from the main window and is
+// awaiting reconciliation (its state.json hasn't caught up yet).
+func (m *Model) isStopped(s claude.Session) bool {
+	return m.statusOf(s) == "stopped" || m.justStopped[s.SessionID]
+}
+
+// countStopped returns how many sessions currently live in the stopped window.
+func (m *Model) countStopped() int {
+	n := 0
+	for _, s := range m.all {
+		if m.isStopped(s) {
+			n++
+		}
+	}
+	return n
 }
 
 // statusRank orders the status buckets. Input is a normalized status from statusOf.
@@ -508,6 +526,10 @@ func (m *Model) sessionMatches(s claude.Session, f string) bool {
 // reorder moves the selected row by delta and persists the new order.
 // Disabled while a filter/search is active (view != full list).
 func (m *Model) reorder(delta int) {
+	if m.stoppedView {
+		m.status = "reordering is only available in the active window"
+		return
+	}
 	if m.group {
 		m.status = "press o for manual order, then reorder"
 		return

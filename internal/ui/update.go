@@ -135,7 +135,8 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.group = !m.group
 		m.recompute()
 	case "s":
-		m.showStopped = !m.showStopped
+		m.stoppedView = !m.stoppedView
+		m.cursor = 0
 		m.recompute()
 	case "r":
 		m.status = "refreshing…"
@@ -200,12 +201,23 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		id, label := m.jobID(s), m.displayName(*s) // attach by job id, not session id
+		note := "← back from " + label
+		if m.stoppedView {
+			// Resuming a stopped session is the same `claude attach` — the CLI
+			// respawns it from the stored respawn flags. Once alive it's an
+			// active session, so leave the stopped window now; the post-attach
+			// refresh reclassifies it out of the stopped bucket into the main one.
+			m.stoppedView = false
+			m.cursor = 0
+			m.recompute()
+			note = "↩ resumed " + label
+		}
 		// Hand the current terminal to `claude attach`. When the user leaves
 		// the conversation, ExecProcess resumes cav in place with all state
 		// intact. The attach exit code is ignored — leaving via Ctrl+Z/Ctrl+C
 		// is a normal, non-error exit.
 		return m, tea.ExecProcess(claude.AttachCmd(id), func(error) tea.Msg {
-			return actionMsg{note: "← back from " + label}
+			return actionMsg{note: note}
 		})
 	case "esc":
 		m.filter, m.matchIDs, m.status = "", nil, ""

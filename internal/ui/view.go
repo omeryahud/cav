@@ -136,7 +136,11 @@ func (m *Model) View() string {
 }
 
 func (m *Model) headerLines() []string {
-	title := titleStyle.Render(fmt.Sprintf(" Claude Sessions (%d) ", len(m.view)))
+	label := "Claude Sessions"
+	if m.stoppedView {
+		label = "Stopped Sessions"
+	}
+	title := titleStyle.Render(fmt.Sprintf(" %s (%d) ", label, len(m.view)))
 	if ind := m.indicators(); ind != "" {
 		title += " " + hintStyle.Render(ind)
 	}
@@ -165,16 +169,10 @@ func (m *Model) indicators() string {
 	if !m.group {
 		parts = append(parts, "manual-order")
 	}
-	if !m.showStopped {
-		n := 0
-		for _, s := range m.all {
-			if m.statusOf(s) == "stopped" {
-				n++
-			}
-		}
-		if n > 0 {
-			parts = append(parts, fmt.Sprintf("%d stopped hidden (s)", n))
-		}
+	if m.stoppedView {
+		parts = append(parts, "s: back to active")
+	} else if n := m.countStopped(); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d stopped (s)", n))
 	}
 	if m.previewOn && m.width < previewMinWidth {
 		parts = append(parts, "preview:too-narrow")
@@ -184,7 +182,11 @@ func (m *Model) indicators() string {
 
 func (m *Model) listLines(h, width int) []string {
 	if len(m.view) == 0 {
-		return fit([]string{dimStyle.Render("  no sessions — press n to create one")}, h)
+		empty := "  no sessions — press n to create one"
+		if m.stoppedView {
+			empty = "  no stopped sessions — press s to go back"
+		}
+		return fit([]string{dimStyle.Render(empty)}, h)
 	}
 	if m.group {
 		vlines, sel := m.groupedVisual(width)
@@ -336,9 +338,13 @@ func (m *Model) footerBlock() string {
 }
 
 func (m *Model) helpBar() string {
+	open, stopped := "open", "stopped"
+	if m.stoppedView {
+		open, stopped = "resume", "back"
+	}
 	binds := []struct{ k, d string }{
-		{"↑/↓", "move"}, {"↵/→", "open"}, {"n", "new"}, {"R", "rename"},
-		{"d", "delete"}, {"l", "logs"}, {"o", "group"}, {"s", "stopped"},
+		{"↑/↓", "move"}, {"↵/→", open}, {"n", "new"}, {"R", "rename"},
+		{"d", "delete"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"J/K", "reorder"}, {"p", "preview"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
 	}
