@@ -297,7 +297,6 @@ func (m *Model) previewLines(h int) []string {
 	return fit(append([]string{header}, body...), h)
 }
 
-
 func (m *Model) pickerLines(h, width int) []string {
 	lines := []string{hintStyle.Render("pick dir: ") + m.input.View(), ""}
 	rows := h - len(lines)
@@ -324,7 +323,11 @@ func (m *Model) footerBlock() string {
 	var status string
 	switch {
 	case m.mode == modeConfirm && m.pending != nil:
-		status = warnDot.Render(fmt.Sprintf("Stop %q? (y/n — y confirms)", m.displayName(*m.pending)))
+		prompt := fmt.Sprintf("Stop %q? (y/n — y confirms)", m.displayName(*m.pending))
+		if !hasLiveWorker(*m.pending) {
+			prompt = fmt.Sprintf("Hide %q from cav? (y/n — survives restart; still resumable via claude)", m.displayName(*m.pending))
+		}
+		status = warnDot.Render(prompt)
 	case m.mode == modePickDir:
 		status = dimStyle.Render("↑/↓ or ctrl+j/k select · ↵ choose · esc cancel")
 	case m.mode == modeRename:
@@ -344,7 +347,7 @@ func (m *Model) helpBar() string {
 	}
 	binds := []struct{ k, d string }{
 		{"↑/↓", "move"}, {"↵/→", open}, {"n", "new"}, {"R", "rename"},
-		{"d", "delete"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
+		{"d", "remove"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"J/K", "reorder"}, {"p", "preview"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
 	}

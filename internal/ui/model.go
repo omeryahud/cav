@@ -12,6 +12,7 @@ import (
 
 	"github.com/omeryahud/cav/internal/claude"
 	"github.com/omeryahud/cav/internal/dirs"
+	"github.com/omeryahud/cav/internal/dismiss"
 	"github.com/omeryahud/cav/internal/names"
 	"github.com/omeryahud/cav/internal/order"
 	"github.com/omeryahud/cav/internal/preview"
@@ -66,22 +67,23 @@ type (
 
 // Model is the cav application state.
 type Model struct {
-	all      []claude.Session  // full list in display order
-	view     []claude.Session  // filtered/searched subset shown
-	roster   claude.Roster     // sessionId -> job id (attachable iff present)
-	states   map[string]string // sessionId -> job lifecycle state (working/done/blocked)
-	names       *names.Store // cav-local display-name overrides
-	group       bool            // true: group by cwd then status; false: manual order
-	stoppedView bool            // true: showing the stopped-sessions window (s toggles)
-	justStopped map[string]bool // just stopped from the main window; kept in the stopped window until reconciled
-	cursor   int
-	order    *order.Store
-	mode     mode
-	input    textinput.Model
-	filter   string          // active metadata filter
-	matchIDs map[string]bool // active deep-search result set (nil = inactive)
-	newCWD   string          // cwd for a pending new session
-	pending  *claude.Session // session awaiting delete confirmation
+	all         []claude.Session  // full list in display order
+	view        []claude.Session  // filtered/searched subset shown
+	roster      claude.Roster     // sessionId -> job id (attachable iff present)
+	states      map[string]string // sessionId -> job lifecycle state (working/done/blocked)
+	names       *names.Store      // cav-local display-name overrides
+	dismissed   *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
+	group       bool              // true: group by cwd then status; false: manual order
+	stoppedView bool              // true: showing the stopped-sessions window (s toggles)
+	justStopped map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
+	cursor      int
+	order       *order.Store
+	mode        mode
+	input       textinput.Model
+	filter      string          // active metadata filter
+	matchIDs    map[string]bool // active deep-search result set (nil = inactive)
+	newCWD      string          // cwd for a pending new session
+	pending     *claude.Session // session awaiting delete confirmation
 
 	// new-session directory picker
 	pickAll []string
@@ -109,13 +111,14 @@ func New() (*Model, error) {
 	ti.CharLimit = 512
 	ti.Width = 60
 	return &Model{
-		order:     order.Load(),
-		names:     names.Load(),
-		input:     ti,
-		mode:      modeList,
-		group:     true,
-		previewOn: true,
-		prevCache: map[string]string{},
+		order:       order.Load(),
+		names:       names.Load(),
+		dismissed:   dismiss.Load(),
+		input:       ti,
+		mode:        modeList,
+		group:       true,
+		previewOn:   true,
+		prevCache:   map[string]string{},
 		prevReq:     map[string]bool{},
 		states:      map[string]string{},
 		last:        map[string]lastMsg{},
@@ -477,6 +480,38 @@ func (m *Model) countStopped() int {
 		}
 	}
 	return n
+}
+
+// filterDismissed drops sessions the user has hidden with d. Dismissed sessions
+// stay on disk (still resumable via the claude CLI); cav just never lists them.
+func (m *Model) filterDismissed(ss []claude.Session) []claude.Session {
+	if m.dismissed.Len() == 0 {
+		return ss
+	}
+	out := make([]claude.Session, 0, len(ss))
+	for _, s := range ss {
+		if !m.dismissed.Has(s.SessionID) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// hasLiveWorker reports whether s is a running daemon worker that `claude stop`
+// can actually act on. `agents --json` reports a status for live background
+// workers; on-disk-only records (finished, stopped, or sleep-dropped) carry no
+// status, so d hides them cav-locally instead of issuing a no-op stop.
+func hasLiveWorker(s claude.Session) bool { return s.Status != "" }
+
+// removeSession returns ss without the session whose id matches.
+func removeSession(ss []claude.Session, id string) []claude.Session {
+	out := ss[:0]
+	for _, s := range ss {
+		if s.SessionID != id {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // statusRank orders the status buckets. Input is a normalized status from statusOf.

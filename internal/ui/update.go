@@ -24,7 +24,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(refreshCmd, tickCmd())
 
 	case refreshResult:
-		m.all = applyOrder(msg.sessions, m.order.IDs())
+		m.all = applyOrder(m.filterDismissed(msg.sessions), m.order.IDs())
 		m.roster = msg.roster
 		m.states = msg.states
 		m.last = msg.last
@@ -173,7 +173,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if !m.canAttach(s) {
-			m.status = "can't stop " + m.displayName(*s) + " — " + notAttachableReason(*s)
+			m.status = "can't remove " + m.displayName(*s) + " — " + notAttachableReason(*s)
 			break
 		}
 		cp := *s
@@ -297,10 +297,23 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s == nil {
 			return m, nil
 		}
-		m.justStopped[s.SessionID] = true // hide now; refresh reconciles once state.json updates
-		m.status = "stopping " + m.displayName(*s) + "…"
+		if hasLiveWorker(*s) {
+			m.justStopped[s.SessionID] = true // hide now; refresh reconciles once state.json updates
+			m.status = "stopping " + m.displayName(*s) + "…"
+			m.recompute()
+			return m, stopCmd(m.jobID(s))
+		}
+		// No live worker: `claude stop` would be a no-op and the session would
+		// reappear on restart, so hide it cav-locally instead. It stays on disk
+		// and resumable via the claude CLI; cav just stops listing it.
+		if err := m.dismissed.Add(s.SessionID); err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.all = removeSession(m.all, s.SessionID)
+		m.status = "hidden " + m.displayName(*s) + " (undo: edit ~/.config/cav/dismissed.json)"
 		m.recompute()
-		return m, stopCmd(m.jobID(s))
+		return m, nil
 	default:
 		m.mode = modeList
 		m.pending = nil
