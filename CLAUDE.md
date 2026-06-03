@@ -132,9 +132,11 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   - For a session with a **live worker**, it shows the **actual terminal screen**:
     cav pulls `claude logs` (the raw recent terminal output) and reconstructs it
     through a **vt10x emulator** (`internal/termview`), rendered with color. The
-    emulator runs at a generous size (≥ the session's own width) and the screen is
-    **cropped to the pane**, so claude's full-screen UI shows its left portion
-    without re-wrapping. It's a ~2s snapshot (no held `attach`), not keystroke-live.
+    emulator runs at a generous size (≥ the session's own width) so the session's
+    layout reconstructs faithfully; each row is then **line-wrapped to the pane
+    width** so no horizontal content is lost. The wrapped screen can be taller than
+    the pane, so it's **bottom-anchored** to the latest content. It's a ~2s snapshot
+    (no held `attach`), not keystroke-live.
   - For a session with **no live worker** (done/complete/stopped, or sleep-dropped),
     there's no terminal to show, so it falls back to the **recent conversation
     rendered from markdown via glamour** (role-labelled user=green,

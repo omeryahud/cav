@@ -30,14 +30,15 @@ const styleMask = attrReverse | attrUnderline | attrBold | attrItalic
 // the current screen.
 const maxBytes = 256 << 10
 
-// Render reconstructs the session screen and returns it as styled ANSI lines.
+// Render reconstructs the session screen and returns it as styled ANSI lines,
+// line-wrapped to wrapWidth so no horizontal content is lost.
 //
 // The stream is emulated at emuCols×emuRows — which must be >= the session's own
-// terminal size, or its pre-wrapped lines re-wrap and garble — then the top-left
-// outCols×outRows region is returned (cropping the rest to fit a smaller pane).
-func Render(raw []byte, emuCols, emuRows, outCols, outRows int) string {
-	emuCols, emuRows = max(emuCols, 1), max(emuRows, 1)
-	outCols, outRows = max(outCols, 1), max(outRows, 1)
+// terminal size, or its pre-wrapped lines re-wrap and garble. Each non-empty row
+// is then re-flowed into wrapWidth-wide segments. The result can be taller than
+// the pane; the caller bottom-anchors and clips it to the latest content.
+func Render(raw []byte, emuCols, emuRows, wrapWidth int) string {
+	emuCols, emuRows, wrapWidth = max(emuCols, 1), max(emuRows, 1), max(wrapWidth, 1)
 	if len(raw) > maxBytes {
 		raw = raw[len(raw)-maxBytes:]
 	}
@@ -45,23 +46,41 @@ func Render(raw []byte, emuCols, emuRows, outCols, outRows int) string {
 	_, _ = term.Write(raw)
 	term.Lock()
 	defer term.Unlock()
-	c, r := term.Size()
-	outCols, outRows = min(outCols, c), min(outRows, r)
-	lines := make([]string, outRows)
-	for y := 0; y < outRows; y++ {
-		lines[y] = renderRow(term, y, outCols)
+	cols, rows := term.Size()
+	content := lastContentRow(term, cols, rows)
+	var out []string
+	for y := 0; y < content; y++ {
+		out = append(out, wrapRow(term, y, cols, wrapWidth)...)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(out, "\n")
 }
 
-// renderRow renders row y, coalescing runs of same-style cells into one styled
-// segment so the output stays compact.
-func renderRow(term vt10x.View, y, cols int) string {
+// wrapRow renders row y (trailing blanks trimmed) re-flowed into wrapWidth-wide
+// segments, preserving per-cell styling. A blank row yields one empty line so
+// vertical spacing is kept.
+func wrapRow(term vt10x.View, y, cols, wrapWidth int) []string {
+	end := cols
+	for end > 0 && blank(term.Cell(end-1, y)) {
+		end--
+	}
+	if end == 0 {
+		return []string{""}
+	}
+	var lines []string
+	for x := 0; x < end; x += wrapWidth {
+		lines = append(lines, renderSegment(term, y, x, min(x+wrapWidth, end)))
+	}
+	return lines
+}
+
+// renderSegment renders cells [x0,x1) of row y, coalescing runs of same-style
+// cells into one styled segment so the output stays compact.
+func renderSegment(term vt10x.View, y, x0, x1 int) string {
 	var out strings.Builder
-	for x := 0; x < cols; {
+	for x := x0; x < x1; {
 		start := term.Cell(x, y)
 		var run []rune
-		for x < cols {
+		for x < x1 {
 			g := term.Cell(x, y)
 			if !sameStyle(g, start) {
 				break
@@ -76,6 +95,25 @@ func renderRow(term vt10x.View, y, cols int) string {
 		out.WriteString(styleFor(start).Render(string(run)))
 	}
 	return out.String()
+}
+
+// lastContentRow returns one past the last row with any visible content, so the
+// trailing blank rows of an over-tall emulator aren't emitted.
+func lastContentRow(term vt10x.View, cols, rows int) int {
+	for y := rows - 1; y >= 0; y-- {
+		for x := 0; x < cols; x++ {
+			if !blank(term.Cell(x, y)) {
+				return y + 1
+			}
+		}
+	}
+	return 0
+}
+
+// blank reports whether a cell is empty space on the default background (so it
+// can be trimmed); a space carrying a background color is kept.
+func blank(g vt10x.Glyph) bool {
+	return (g.Char == 0 || g.Char == ' ') && g.Mode&attrReverse == 0 && g.BG >= 1<<24
 }
 
 func sameStyle(a, b vt10x.Glyph) bool {

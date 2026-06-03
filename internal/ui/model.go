@@ -236,7 +236,7 @@ func previewCmd(id, jobID string, live bool, width, height int) tea.Cmd {
 			defer cancel()
 			if raw, err := claude.Logs(ctx, jobID); err == nil && len(raw) > 0 {
 				emuCols, emuRows := max(width, previewEmuCols), max(height, previewEmuRows)
-				return previewMsg{id: id, text: termview.Render(raw, emuCols, emuRows, width, height)}
+				return previewMsg{id: id, text: termview.Render(raw, emuCols, emuRows, width)}
 			}
 		}
 		return previewMsg{id: id, text: renderSnippets(preview.Recent(id, 14), width)}
