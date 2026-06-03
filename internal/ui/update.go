@@ -172,10 +172,10 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s == nil {
 			break
 		}
-		if !m.canAttach(s) {
-			m.status = "can't remove " + m.displayName(*s) + " — " + notAttachableReason(*s)
-			break
-		}
+		// d removes a session via the confirm prompt: one with a live worker is
+		// stopped (→ stopped window); any other (finished, or a non-attachable
+		// interactive session) is hidden cav-locally. Dismissing needs only the
+		// session id, so — unlike open/logs — this works without a job id.
 		cp := *s
 		m.pending = &cp
 		m.mode = modeConfirm

@@ -92,7 +92,7 @@ sessions but differ after branch/respawn (e.g. session `72cdfc0f` ↔ job
    live one) and updated within `recentDays` (7). This keeps stopped and
    sleep-dropped sessions visible and resumable.
 3. Interactive sessions (no job dir, not in roster) are listed but **not
-   attachable**.
+   attachable** (open/logs need a job id). They can still be hidden with `d`.
 
 Transcripts live at `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`; the
 encoding is lossy, so `internal/preview` **globs by `<sessionId>.jsonl`** rather
@@ -155,12 +155,13 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 - **Remove** (`d`): branches on whether the session has a **live worker**. With one
   (status from `agents --json`), runs `claude stop` — moving it to the stopped
   window (optimistic hide, reconciled on refresh). With **no** live worker
-  (done/complete/error, or sleep-dropped), `claude stop` is a no-op and the row
-  would return on the next launch, so cav instead **hides it in a cav-local
-  dismissed set** (`~/.config/cav/dismissed.json`) and never lists it again.
-  Dismissing is non-destructive: the session stays on disk and resumable via the
-  `claude` CLI; undo by editing that file. The confirm prompt names which action
-  will run.
+  (done/complete/error, sleep-dropped, or a non-attachable interactive session),
+  `claude stop` is a no-op (or impossible), so cav instead **hides it in a
+  cav-local dismissed set** (`~/.config/cav/dismissed.json`) and never lists it
+  again — dismissing needs only the session id, so it works without a job id.
+  Non-destructive: the session stays on disk / keeps running and is still
+  reachable via the `claude` CLI; undo by editing that file. The confirm prompt
+  names which action will run.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `n` new · `R` rename · `d` remove · `l` logs · `o` group ·
   `s` stopped-window toggle · `J/K` reorder · `p` preview · `/` filter (metadata) ·
