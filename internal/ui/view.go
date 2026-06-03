@@ -31,12 +31,12 @@ var (
 	statHeader  = lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Italic(true)
 
 	// status dot + sub-header colors (kept in sync)
-	doneDot = lipgloss.NewStyle().Foreground(lipgloss.Color("71"))               // complete ✓
+	doneDot = lipgloss.NewStyle().Foreground(lipgloss.Color("44"))               // complete ✓
 	runHdr  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Italic(true)  // running
 	waitHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Italic(true) // waiting for input
 	errHdr  = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Italic(true) // error
 	idleHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true) // idle
-	doneHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("71")).Italic(true)  // complete
+	doneHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("44")).Italic(true)  // complete
 
 	// preview role labels (user vs assistant); message bodies are markdown-rendered
 	userLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
