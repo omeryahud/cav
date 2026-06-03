@@ -13,7 +13,7 @@ import (
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		if msg.Width != m.width { // re-render previews wrapped to the new width
+		if msg.Width != m.width || msg.Height != m.height { // re-render previews for the new size (live terminal view depends on both)
 			m.prevCache = map[string]string{}
 			m.prevReq = map[string]bool{}
 		}
@@ -47,7 +47,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showPreview() {
 			if s := m.current(); s != nil {
 				m.prevReq[s.SessionID] = true
-				return m, previewCmd(s.SessionID, m.previewWidth())
+				return m, m.previewCmdFor(s)
 			}
 		}
 		return m, nil

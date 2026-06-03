@@ -17,10 +17,19 @@ import (
 	"github.com/omeryahud/cav/internal/order"
 	"github.com/omeryahud/cav/internal/preview"
 	"github.com/omeryahud/cav/internal/search"
+	"github.com/omeryahud/cav/internal/termview"
 )
 
 // previewMinWidth is the terminal width below which the preview pane is hidden.
 const previewMinWidth = 100
+
+// Size the live-session terminal emulator generously — it must be >= the
+// session's own terminal so its pre-wrapped lines don't re-wrap; the screen is
+// then cropped to the (smaller) preview pane.
+const (
+	previewEmuCols = 220
+	previewEmuRows = 64
+)
 
 // recentDays bounds how far back non-live on-disk sessions are shown.
 const recentDays = 7
@@ -217,8 +226,19 @@ func dirsCmd() tea.Cmd {
 	return func() tea.Msg { return dirsMsg(dirs.Candidates()) }
 }
 
-func previewCmd(id string, width int) tea.Cmd {
+// previewCmd loads the preview for a session. For a session with a live worker
+// it shows the actual terminal screen (claude logs → emulated at width×height);
+// otherwise (and on any logs failure) it falls back to the transcript text.
+func previewCmd(id, jobID string, live bool, width, height int) tea.Cmd {
 	return func() tea.Msg {
+		if live && jobID != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			defer cancel()
+			if raw, err := claude.Logs(ctx, jobID); err == nil && len(raw) > 0 {
+				emuCols, emuRows := max(width, previewEmuCols), max(height, previewEmuRows)
+				return previewMsg{id: id, text: termview.Render(raw, emuCols, emuRows, width, height)}
+			}
+		}
 		return previewMsg{id: id, text: renderSnippets(preview.Recent(id, 14), width)}
 	}
 }
@@ -301,6 +321,31 @@ func (m *Model) previewWidth() int {
 	return m.width / 2
 }
 
+// midHeight is the height of the middle list/preview region (everything between
+// the 2-line header and the footer), mirroring the layout math in View.
+func (m *Model) midHeight() int {
+	h := m.height - 2 - len(strings.Split(m.footerBlock(), "\n"))
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+// previewBodyHeight is the row count available to preview content, below the
+// pane's "─ preview ─" header. Used to size the emulated terminal screen.
+func (m *Model) previewBodyHeight() int {
+	if h := m.midHeight() - 1; h > 0 {
+		return h
+	}
+	return 1
+}
+
+// previewCmdFor builds the preview load command for s, supplying the job id and
+// live-worker flag so previewCmd can choose the live-terminal or text path.
+func (m *Model) previewCmdFor(s *claude.Session) tea.Cmd {
+	return previewCmd(s.SessionID, m.jobID(s), hasLiveWorker(*s), m.previewWidth(), m.previewBodyHeight())
+}
+
 // ensurePreview lazily loads the selected session's transcript preview.
 func (m *Model) ensurePreview() tea.Cmd {
 	if !m.showPreview() {
@@ -317,7 +362,7 @@ func (m *Model) ensurePreview() tea.Cmd {
 		return nil // load already in flight
 	}
 	m.prevReq[s.SessionID] = true
-	return previewCmd(s.SessionID, m.previewWidth())
+	return m.previewCmdFor(s)
 }
 
 // recomputePick filters + ranks the directory candidates by the input value.

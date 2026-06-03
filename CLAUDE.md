@@ -40,7 +40,7 @@ after.
 - `internal/claude/` — the only place that talks to the `claude` CLI and the
   on-disk daemon/job state.
   - `types.go` — `Session` (mirrors `claude agents --json`).
-  - `client.go` — `List`, `Stop`, `Create`, `AttachCmd`, `LogsShellCmd`,
+  - `client.go` — `List`, `Stop`, `Create`, `AttachCmd`, `LogsShellCmd`, `Logs`,
     `Roster`/`LoadRoster`/`JobID`, `JobState`, `JobRecord`/`ScanJobs`.
 - `internal/ui/` — the Bubble Tea app.
   - `model.go` — `Model`, messages, commands (incl. `refreshCmd` merge), the
@@ -52,8 +52,10 @@ after.
 - `internal/names/` — cav-local rename overrides (`~/.config/cav/names.json`).
 - `internal/dismiss/` — cav-local set of sessions hidden with `d` (`~/.config/cav/dismissed.json`).
 - `internal/dirs/` — portable directory candidates for the "new session" picker.
-- `internal/preview/` — transcript snippet extraction for the preview pane and
-  the per-row last message.
+- `internal/preview/` — transcript snippet extraction for the markdown preview
+  (non-live sessions) and the per-row last message.
+- `internal/termview/` — reconstructs a live session's terminal screen from
+  `claude logs` output via a vt10x emulator, rendered (with color) for the preview.
 
 ## How sessions are sourced (the critical knowledge)
 
@@ -126,11 +128,19 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   Selecting a stopped session and pressing `↵`/`→` **resumes** it (see Open/resume)
   and returns to the main window. Stopping a live session (see **Remove**) also
   moves it here.
-- **Preview pane** (right, 50% width, `p` toggles): the selected session's recent
-  conversation rendered from **markdown via glamour**, role-labelled
-  (user=green, assistant=lavender), **bottom-anchored** to the latest messages.
-  Rendered once on load (async, cached; cache cleared on resize), and the
-  selected session's preview is refreshed each tick.
+- **Preview pane** (right, 50% width, `p` toggles), refreshed each tick:
+  - For a session with a **live worker**, it shows the **actual terminal screen**:
+    cav pulls `claude logs` (the raw recent terminal output) and reconstructs it
+    through a **vt10x emulator** (`internal/termview`), rendered with color. The
+    emulator runs at a generous size (≥ the session's own width) and the screen is
+    **cropped to the pane**, so claude's full-screen UI shows its left portion
+    without re-wrapping. It's a ~2s snapshot (no held `attach`), not keystroke-live.
+  - For a session with **no live worker** (done/complete/stopped, or sleep-dropped),
+    there's no terminal to show, so it falls back to the **recent conversation
+    rendered from markdown via glamour** (role-labelled user=green,
+    assistant=lavender, bottom-anchored).
+  - Rendered async and cached; the cache is cleared on resize (width *or* height,
+    since the live view depends on both).
 - **Open / resume** (`↵` or `→`): hands the current terminal to
   `claude attach <jobId>` via `tea.ExecProcess`; on exit, cav resumes in place. For
   a **stopped** session this *is* the resume path — `claude attach` respawns it from

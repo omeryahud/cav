@@ -182,3 +182,15 @@ func AttachCmd(id string) *exec.Cmd {
 func LogsShellCmd(id string) *exec.Cmd {
 	return exec.Command("sh", "-c", fmt.Sprintf("%s logs %s | less -R +G", Bin(), id))
 }
+
+// Logs returns a live session's recent terminal output as raw bytes (with the
+// ANSI/cursor-control sequences intact, for a terminal emulator to reconstruct
+// the screen). Only works for a session with a live daemon worker; a
+// stopped/exited session yields an error ("job not found").
+func Logs(ctx context.Context, id string) ([]byte, error) {
+	out, err := exec.CommandContext(ctx, Bin(), "logs", id).Output()
+	if err != nil {
+		return nil, fmt.Errorf("claude logs: %w", err)
+	}
+	return out, nil
+}
