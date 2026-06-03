@@ -20,6 +20,7 @@ var (
 	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	nameStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	selName     = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
+	selBg       = lipgloss.Color("238") // background for the highlighted (selected) row
 	workDot     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	idleDot     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	warnDot     = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
@@ -243,10 +244,6 @@ func (m *Model) groupedVisual(width int) ([]string, int) {
 }
 
 func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
-	marker := "  "
-	if sel {
-		marker = cursorStyle.Render("▸ ")
-	}
 	st := m.statusOf(s)
 	msg := m.last[s.SessionID].text
 	if msg == "" {
@@ -259,15 +256,24 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 		avail = 1
 	}
 	body = truncate(body, avail)
+	glyph, dotStyle := statusGlyphStyle(st)
+
+	if sel {
+		// Full-width highlight bar: pad the body so the background spans the row,
+		// and tint every segment (cursor, dot, text) with the same background.
+		body = padRight(body, avail)
+		return cursorStyle.Background(selBg).Render("▸ ") +
+			dotStyle.Background(selBg).Render(glyph) +
+			selName.Background(selBg).Render(" "+body)
+	}
+
 	switch {
-	case sel:
-		body = selName.Render(body)
 	case !attach:
 		body = dimStyle.Render(body)
 	default:
 		body = nameStyle.Render(body)
 	}
-	return marker + statusDotFor(st) + " " + body
+	return "  " + dotStyle.Render(glyph) + " " + body
 }
 
 func (m *Model) previewLines(h int) []string {
@@ -447,23 +453,30 @@ func wrapJoin(parts []string, sep string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func statusDotFor(status string) string {
+// statusGlyphStyle returns the dot glyph and its color style for a status, so a
+// caller can render it plain or with an added background (the selected row).
+func statusGlyphStyle(status string) (string, lipgloss.Style) {
 	switch status {
 	case "running":
-		return workDot.Render("●")
+		return "●", workDot
 	case "waiting":
-		return warnDot.Render("◆")
+		return "◆", warnDot
 	case "error":
-		return errStyle.Render("✗")
+		return "✗", errStyle
 	case "idle":
-		return idleDot.Render("○")
+		return "○", idleDot
 	case "complete":
-		return doneDot.Render("✓")
+		return "✓", doneDot
 	case "stopped":
-		return dimStyle.Render("◌")
+		return "◌", dimStyle
 	default: // interactive / unknown
-		return dimStyle.Render("·")
+		return "·", dimStyle
 	}
+}
+
+func statusDotFor(status string) string {
+	g, st := statusGlyphStyle(status)
+	return st.Render(g)
 }
 
 func statusLabelFor(status string) string {
