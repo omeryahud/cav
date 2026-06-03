@@ -55,9 +55,10 @@ func Render(raw []byte, emuCols, emuRows, wrapWidth int) string {
 	return strings.Join(out, "\n")
 }
 
-// wrapRow renders row y (trailing blanks trimmed) re-flowed into wrapWidth-wide
-// segments, preserving per-cell styling. A blank row yields one empty line so
-// vertical spacing is kept.
+// wrapRow renders row y (trailing blanks trimmed) re-flowed to wrapWidth,
+// preserving per-cell styling. Wrapping is word-aware: it breaks just after the
+// last space within the width, falling back to a hard break only for a word
+// longer than the width. A blank row yields one empty line so spacing is kept.
 func wrapRow(term vt10x.View, y, cols, wrapWidth int) []string {
 	end := cols
 	for end > 0 && blank(term.Cell(end-1, y)) {
@@ -66,9 +67,31 @@ func wrapRow(term vt10x.View, y, cols, wrapWidth int) []string {
 	if end == 0 {
 		return []string{""}
 	}
+	// Cell chars for break decisions (same normalization renderSegment uses).
+	chars := make([]rune, end)
+	for i := range chars {
+		if ch := term.Cell(i, y).Char; ch >= 32 {
+			chars[i] = ch
+		} else {
+			chars[i] = ' '
+		}
+	}
 	var lines []string
-	for x := 0; x < end; x += wrapWidth {
-		lines = append(lines, renderSegment(term, y, x, min(x+wrapWidth, end)))
+	for start := 0; start < end; {
+		if end-start <= wrapWidth {
+			lines = append(lines, renderSegment(term, y, start, end))
+			break
+		}
+		limit := start + wrapWidth
+		brk := limit // hard break (over-long word)
+		for i := limit; i > start; i-- {
+			if chars[i-1] == ' ' { // break right after the last space in range
+				brk = i
+				break
+			}
+		}
+		lines = append(lines, renderSegment(term, y, start, brk))
+		start = brk
 	}
 	return lines
 }

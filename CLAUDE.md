@@ -133,8 +133,10 @@ Bucket sub-headers and dots are color-coded and kept in sync.
     cav pulls `claude logs` (the raw recent terminal output) and reconstructs it
     through a **vt10x emulator** (`internal/termview`), rendered with color. The
     emulator runs at a generous size (≥ the session's own width) so the session's
-    layout reconstructs faithfully; each row is then **line-wrapped to the pane
-    width** so no horizontal content is lost. The wrapped screen can be taller than
+    layout reconstructs faithfully; each row is then **word-wrapped to the pane
+    width** (breaking at spaces, not mid-word) so no horizontal content is lost.
+    Note the session renders at its own width and cav can't resize it, so wrapped
+    lines still have short remainders. The wrapped screen can be taller than
     the pane, so it's **bottom-anchored** to the latest content. It's a ~2s snapshot
     (no held `attach`), not keystroke-live.
   - For a session with **no live worker** (done/complete/stopped, or sleep-dropped),
