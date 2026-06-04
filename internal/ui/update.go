@@ -82,12 +82,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recompute()
 		return m, nil
 
+	case openProjectMsg:
+		// New project session created; hand the terminal to it (like open). If
+		// the job id couldn't be parsed, just refresh so it shows in the list.
+		if msg.jobID == "" {
+			m.status = "created " + msg.label + " — press r, then ↵ to open it"
+			return m, refreshCmd
+		}
+		m.status = "created " + msg.label
+		label := msg.label
+		return m, tea.ExecProcess(claude.AttachCmd(msg.jobID), func(error) tea.Msg {
+			return actionMsg{note: "← back from " + label}
+		})
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 
 	// Non-key messages while typing (e.g. cursor blink) go to the input.
-	if m.mode == modeFilter || m.mode == modeSearch || m.mode == modeNew {
+	if m.mode == modeFilter || m.mode == modeSearch || m.mode == modeNew || m.mode == modeNewProject {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
@@ -109,6 +122,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleRenameKey(msg)
 	case modePickDir:
 		return m.handlePickKey(msg)
+	case modeNewProject:
+		return m.handleNewProjectKey(msg)
 	}
 	return m.handleListKey(msg)
 }
@@ -167,6 +182,11 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Placeholder = "fuzzy-find a directory…"
 		m.status = "loading directories…"
 		return m, tea.Batch(m.input.Focus(), dirsCmd())
+	case "N":
+		m.mode = modeNewProject
+		m.input.SetValue("")
+		m.input.Placeholder = "new project name (creates " + homeShorten(projectRoot()) + "/<name>)…"
+		return m, m.input.Focus()
 	case "d":
 		s := m.current()
 		if s == nil {
@@ -282,6 +302,29 @@ func (m *Model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Blur()
 		m.status = "creating session…"
 		return m, createCmd(cwd, prompt)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// handleNewProjectKey handles the N flow: type a name → make the directory under
+// projectRoot, start a session there, and open it.
+func (m *Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.input.Value())
+		m.mode = modeList
+		m.input.Blur()
+		if name == "" {
+			return m, nil
+		}
+		m.status = "creating project " + name + "…"
+		return m, newProjectCmd(name)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)

@@ -163,7 +163,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   reachable via the `claude` CLI; undo by editing that file. The confirm prompt
   names which action will run.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
-  stopped window) · `n` new · `R` rename · `d` remove · `l` logs · `o` group ·
+  stopped window) · `n` new · `N` new project (dir + session, opens it) · `R` rename ·
+  `d` remove · `l` logs · `o` group ·
   `s` stopped-window toggle · `J/K` reorder · `p` preview · `/` filter (metadata) ·
   `f` search (transcript content) · `esc` clear · `r` refresh · `q` quit.
 
@@ -181,6 +182,13 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 
 The dir picker is **self-contained**: native Go walk (depth-capped, noise dirs
 pruned), no dependency on `fd` or the user's `cdf`/`cdfpaths.txt`.
+
+`N` (**new project**) is separate from the `n` picker: it prompts for a name,
+creates `~/go/src/github.com/omeryahud/<name>`, starts an idle background session
+there (`claude --bg`, no prompt), and immediately **opens (attaches)** it — so you
+land in a fresh session in the new directory. `claude.Create` parses the new
+job id out of `claude --bg`'s output (`backgrounded · <id> …`) so cav knows what
+to attach (`--bg` ignores `--session-id`, so we can't choose the id ourselves).
 
 ## Conventions
 

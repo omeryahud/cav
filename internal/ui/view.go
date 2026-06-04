@@ -155,6 +155,8 @@ func (m *Model) headerLines() []string {
 		second = hintStyle.Render("rename: ") + m.input.View()
 	case modeNew:
 		second = hintStyle.Render("new in "+homeShorten(m.newCWD)+": ") + m.input.View()
+	case modeNewProject:
+		second = hintStyle.Render("new project: ") + m.input.View()
 	}
 	return []string{title, second}
 }
@@ -352,7 +354,7 @@ func (m *Model) helpBar() string {
 		open, stopped = "resume", "back"
 	}
 	binds := []struct{ k, d string }{
-		{"↑/↓", "move"}, {"↵/→", open}, {"n", "new"}, {"R", "rename"},
+		{"↑/↓", "move"}, {"↵/→", open}, {"n", "new"}, {"N", "new project"}, {"R", "rename"},
 		{"d", "remove"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"J/K", "reorder"}, {"p", "preview"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},

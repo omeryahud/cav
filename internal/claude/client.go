@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"time"
 )
 
@@ -154,8 +155,11 @@ func Stop(ctx context.Context, id string) error {
 	return nil
 }
 
-// Create starts a new background session in cwd with an optional name and prompt.
-func Create(ctx context.Context, cwd, name, prompt string) error {
+// Create starts a new background session in cwd with an optional name and prompt
+// (an empty prompt yields an idle session). It returns the new session's short
+// job id, parsed from `claude --bg`'s output, for attaching to it; the id is ""
+// if it couldn't be parsed.
+func Create(ctx context.Context, cwd, name, prompt string) (string, error) {
 	args := []string{"--bg"}
 	if name != "" {
 		args = append(args, "--name", name)
@@ -167,10 +171,28 @@ func Create(ctx context.Context, cwd, name, prompt string) error {
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("claude --bg: %w: %s", err, out)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("claude --bg: %w: %s", err, out)
 	}
-	return nil
+	return parseJobID(string(out)), nil
+}
+
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+// parseJobID pulls the 8-char job id out of `claude --bg`'s output, e.g.
+// "backgrounded · a7dc5ce7 · name (idle…)" and "claude attach a7dc5ce7".
+func parseJobID(out string) string {
+	out = ansiRE.ReplaceAllString(out, "")
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`backgrounded[^\n]*?([0-9a-f]{8})`),
+		regexp.MustCompile(`attach\s+([0-9a-f]{8})`),
+	} {
+		if m := re.FindStringSubmatch(out); m != nil {
+			return m[1]
+		}
+	}
+	return ""
 }
 
 // AttachCmd builds the command to attach to a session (full terminal handoff).

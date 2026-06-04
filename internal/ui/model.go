@@ -3,6 +3,9 @@ package ui
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -44,6 +47,7 @@ const (
 	modeConfirm
 	modeRename
 	modePickDir
+	modeNewProject
 )
 
 // lastMsg is the most recent message of a session, shown on its list row.
@@ -70,6 +74,12 @@ type (
 	previewMsg struct {
 		id   string
 		text string // markdown rendered to ANSI at load time
+	}
+	// openProjectMsg follows a successful "new project" create: open (attach to)
+	// the freshly created session by its job id.
+	openProjectMsg struct {
+		jobID string
+		label string
 	}
 	tickMsg struct{}
 )
@@ -215,10 +225,39 @@ func createCmd(cwd, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
-		if err := claude.Create(ctx, cwd, "", prompt); err != nil {
+		if _, err := claude.Create(ctx, cwd, "", prompt); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{note: "session created"}
+	}
+}
+
+// projectRoot is where the "new project" shortcut (N) creates directories.
+func projectRoot() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "go", "src", "github.com", "omeryahud")
+}
+
+// newProjectCmd creates a directory <projectRoot>/<name>, starts an (idle)
+// background session in it, and asks the UI to open that session.
+func newProjectCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		root := projectRoot()
+		cwd := filepath.Clean(filepath.Join(root, name))
+		if cwd != root && !strings.HasPrefix(cwd, root+string(os.PathSeparator)) {
+			return actionMsg{err: fmt.Errorf("invalid project name %q", name)}
+		}
+		if err := os.MkdirAll(cwd, 0o755); err != nil {
+			return actionMsg{err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		label := filepath.Base(cwd)
+		jobID, err := claude.Create(ctx, cwd, label, "")
+		if err != nil {
+			return actionMsg{err: err}
+		}
+		return openProjectMsg{jobID: jobID, label: label}
 	}
 }
 
