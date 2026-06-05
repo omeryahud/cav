@@ -48,6 +48,7 @@ const (
 	modeRename
 	modePickDir
 	modeNewProject
+	modeNewName
 )
 
 // messages
@@ -82,23 +83,25 @@ type (
 
 // Model is the cav application state.
 type Model struct {
-	all         []claude.Session  // full list in display order
-	view        []claude.Session  // filtered/searched subset shown
-	roster      claude.Roster     // sessionId -> job id (attachable iff present)
-	states      map[string]string // sessionId -> job lifecycle state (working/done/blocked)
-	names       *names.Store      // cav-local display-name overrides
-	dismissed   *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
-	group       bool              // true: group by cwd then status; false: manual order
-	stoppedView bool              // true: showing the stopped-sessions window (s toggles)
-	justStopped map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
-	cursor      int
-	order       *order.Store
-	mode        mode
-	input       textinput.Model
-	filter      string          // active metadata filter
-	matchIDs    map[string]bool // active deep-search result set (nil = inactive)
-	newCWD      string          // cwd for a pending new session
-	pending     *claude.Session // session awaiting delete confirmation
+	all          []claude.Session  // full list in display order
+	view         []claude.Session  // filtered/searched subset shown
+	roster       claude.Roster     // sessionId -> job id (attachable iff present)
+	states       map[string]string // sessionId -> job lifecycle state (working/done/blocked)
+	names        *names.Store      // cav-local display-name overrides
+	dismissed    *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
+	group        bool              // true: group by cwd then status; false: manual order
+	stoppedView  bool              // true: showing the stopped-sessions window (s toggles)
+	justStopped  map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
+	cursor       int
+	order        *order.Store
+	mode         mode
+	input        textinput.Model
+	filter       string          // active metadata filter
+	matchIDs     map[string]bool // active deep-search result set (nil = inactive)
+	newCWD       string          // cwd for a pending new session
+	newName      string          // session name entered in the create wizard
+	newIsProject bool            // create wizard: N (make a new dir) vs n (existing dir)
+	pending      *claude.Session // session awaiting delete confirmation
 
 	// new-session directory picker
 	pickAll []string
@@ -208,11 +211,11 @@ func searchCmd(q string) tea.Cmd {
 	}
 }
 
-func createCmd(cwd, prompt string) tea.Cmd {
+func createCmd(cwd, name, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
-		if _, err := claude.Create(ctx, cwd, "", prompt); err != nil {
+		if _, err := claude.Create(ctx, cwd, name, prompt); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{note: "session created"}
@@ -225,26 +228,29 @@ func projectRoot() string {
 	return filepath.Join(home, "go", "src", "github.com", "omeryahud")
 }
 
-// newProjectCmd creates a directory <projectRoot>/<name>, starts an (idle)
-// background session in it, and asks the UI to open that session.
-func newProjectCmd(name string) tea.Cmd {
+// newProjectCmd creates the directory cwd (which must be under projectRoot),
+// starts a background session in it named name (falling back to the dir's base
+// name) with an optional prompt, and asks the UI to open that session.
+func newProjectCmd(cwd, name, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		root := projectRoot()
-		cwd := filepath.Clean(filepath.Join(root, name))
+		cwd = filepath.Clean(cwd)
 		if cwd != root && !strings.HasPrefix(cwd, root+string(os.PathSeparator)) {
-			return actionMsg{err: fmt.Errorf("invalid project name %q", name)}
+			return actionMsg{err: fmt.Errorf("invalid project path %q", cwd)}
 		}
 		if err := os.MkdirAll(cwd, 0o755); err != nil {
 			return actionMsg{err: err}
 		}
+		if name == "" {
+			name = filepath.Base(cwd)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
-		label := filepath.Base(cwd)
-		jobID, err := claude.Create(ctx, cwd, label, "")
+		jobID, err := claude.Create(ctx, cwd, name, prompt)
 		if err != nil {
 			return actionMsg{err: err}
 		}
-		return openProjectMsg{jobID: jobID, label: label}
+		return openProjectMsg{jobID: jobID, label: name}
 	}
 }
 

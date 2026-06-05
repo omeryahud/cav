@@ -157,6 +157,8 @@ func (m *Model) headerLines() []string {
 		second = hintStyle.Render("new in "+homeShorten(m.newCWD)+": ") + m.input.View()
 	case modeNewProject:
 		second = hintStyle.Render("new project: ") + m.input.View()
+	case modeNewName:
+		second = hintStyle.Render("session name: ") + m.input.View()
 	}
 	return []string{title, second}
 }
@@ -247,8 +249,11 @@ func (m *Model) groupedVisual(width int) ([]string, int) {
 
 func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 	st := m.statusOf(s)
-	body := fmt.Sprintf("%-18s %-8s %4s",
-		truncate(m.displayName(s), 18), statusLabelFor(st), humanAge(s.Started()))
+	// Widen the name column to use the freed space (the message snippet is gone),
+	// but cap it and never crowd the status/age columns on narrow layouts.
+	nameW := clamp(width-18, 18, 36)
+	body := fmt.Sprintf("%-*s %-8s %4s",
+		nameW, truncate(m.displayName(s), nameW), statusLabelFor(st), humanAge(s.Started()))
 	avail := width - 4 // marker(2) + dot(1) + space(1)
 	if avail < 1 {
 		avail = 1

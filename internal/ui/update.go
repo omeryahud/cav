@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -99,7 +100,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Non-key messages while typing (e.g. cursor blink) go to the input.
-	if m.mode == modeFilter || m.mode == modeSearch || m.mode == modeNew || m.mode == modeNewProject {
+	if m.mode == modeFilter || m.mode == modeSearch || m.mode == modeNew || m.mode == modeNewProject || m.mode == modeNewName {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
@@ -123,6 +124,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePickKey(msg)
 	case modeNewProject:
 		return m.handleNewProjectKey(msg)
+	case modeNewName:
+		return m.handleNewNameKey(msg)
 	}
 	return m.handleListKey(msg)
 }
@@ -296,11 +299,34 @@ func (m *Model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		prompt := m.input.Value()
-		cwd := m.newCWD
 		m.mode = modeList
 		m.input.Blur()
+		if m.newIsProject {
+			m.status = "creating project…"
+			return m, newProjectCmd(m.newCWD, m.newName, prompt)
+		}
 		m.status = "creating session…"
-		return m, createCmd(cwd, prompt)
+		return m, createCmd(m.newCWD, m.newName, prompt)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// handleNewNameKey is the create wizard's session-name step: capture the name,
+// then advance to the prompt step (modeNew). esc cancels the whole wizard.
+func (m *Model) handleNewNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		m.newName = strings.TrimSpace(m.input.Value())
+		m.mode = modeNew
+		m.input.SetValue("")
+		m.input.Placeholder = "initial prompt (optional)…"
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -316,14 +342,19 @@ func (m *Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Blur()
 		return m, nil
 	case "enter":
-		name := strings.TrimSpace(m.input.Value())
-		m.mode = modeList
-		m.input.Blur()
-		if name == "" {
+		project := strings.TrimSpace(m.input.Value())
+		if project == "" {
+			m.mode = modeList
+			m.input.Blur()
 			return m, nil
 		}
-		m.status = "creating project " + name + "…"
-		return m, newProjectCmd(name)
+		m.newCWD = filepath.Join(projectRoot(), project)
+		m.newIsProject = true
+		m.mode = modeNewName
+		m.input.SetValue(filepath.Base(m.newCWD)) // default session name = the new dir's name
+		m.input.Placeholder = "session name…"
+		m.input.CursorEnd()
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -404,9 +435,10 @@ func (m *Model) handlePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.newCWD = m.pickHit[m.pickCur]
-		m.mode = modeNew
+		m.newIsProject = false
+		m.mode = modeNewName
 		m.input.SetValue("")
-		m.input.Placeholder = "initial prompt (optional)…"
+		m.input.Placeholder = "session name (optional)…"
 		return m, nil
 	}
 	var cmd tea.Cmd

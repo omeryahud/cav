@@ -184,12 +184,18 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 The dir picker is **self-contained**: native Go walk (depth-capped, noise dirs
 pruned), no dependency on `fd` or the user's `cdf`/`cdfpaths.txt`.
 
-`N` (**new project**) is separate from the `n` picker: it prompts for a name,
-creates `~/go/src/github.com/omeryahud/<name>`, starts an idle background session
-there (`claude --bg`, no prompt), and immediately **opens (attaches)** it — so you
-land in a fresh session in the new directory. `claude.Create` parses the new
-job id out of `claude --bg`'s output (`backgrounded · <id> …`) so cav knows what
-to attach (`--bg` ignores `--session-id`, so we can't choose the id ourselves).
+Both create flows are a small wizard that asks for a **session name, then an
+initial prompt** (both optional, in that order) before creating:
+- `n` (new session): fuzzy-pick an existing directory → name → prompt → start a
+  background session there (not auto-opened).
+- `N` (**new project**): type a name → cav makes
+  `~/go/src/github.com/omeryahud/<name>` → session name (defaults to that dir) →
+  prompt (empty = idle) → start the session and immediately **open (attach)** it,
+  so you land in a fresh session in the new directory.
+
+`claude.Create` parses the new job id out of `claude --bg`'s output
+(`backgrounded · <id> …`) so `N` knows what to attach (`--bg` ignores
+`--session-id`, so we can't choose the id ourselves).
 
 ## Conventions
 
