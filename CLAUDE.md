@@ -53,7 +53,7 @@ after.
 - `internal/dismiss/` — cav-local set of sessions hidden with `d` (`~/.config/cav/dismissed.json`).
 - `internal/dirs/` — portable directory candidates for the "new session" picker.
 - `internal/preview/` — transcript snippet extraction for the markdown preview
-  (non-live sessions) and the per-row last message.
+  (non-live sessions).
 - `internal/termview/` — reconstructs a live session's terminal screen from
   `claude logs` output via a vt10x emulator, rendered (with color) for the preview.
 
