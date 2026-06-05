@@ -148,6 +148,14 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.reorder(-1)
 	case "p":
 		m.previewOn = !m.previewOn
+	case "ctrl+u":
+		m.scrollPreview(max(1, m.previewBodyHeight()/2)) // half page toward older
+	case "ctrl+d":
+		m.scrollPreview(-max(1, m.previewBodyHeight()/2)) // half page toward latest
+	case "pgup":
+		m.scrollPreview(max(1, m.previewBodyHeight()-1))
+	case "pgdown":
+		m.scrollPreview(-max(1, m.previewBodyHeight()-1))
 	case "o":
 		m.group = !m.group
 		m.recompute()

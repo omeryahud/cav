@@ -146,6 +146,10 @@ Bucket sub-headers and dots are color-coded and kept in sync.
     assistant=lavender, bottom-anchored).
   - Rendered async and cached; the cache is cleared on resize (width *or* height,
     since the live view depends on both).
+  - **Scrollable:** `ctrl+u`/`ctrl+d` (half page) and `pgup`/`pgdn` (full page)
+    scroll the pane. It's bottom-anchored with an upward offset (`previewScroll`);
+    the header shows `↑`/`↑↓`/`↓` for which way more content exists, and the offset
+    resets to the bottom whenever the selected session changes.
 - **Open / resume** (`↵` or `→`): hands the current terminal to
   `claude attach <jobId>` via `tea.ExecProcess`; on exit, cav resumes in place. For
   a **stopped** session this *is* the resume path — `claude attach` respawns it from
@@ -166,7 +170,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `n` new (opens it) · `N` new project (new dir, opens it) · `R` rename ·
   `d` remove · `l` logs · `o` group ·
-  `s` stopped-window toggle · `J/K` reorder · `p` preview · `/` filter (metadata) ·
+  `s` stopped-window toggle · `J/K` reorder · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
+  scroll preview · `/` filter (metadata) ·
   `f` search (transcript content) · `esc` clear · `r` refresh · `q` quit.
 
 ## Config files

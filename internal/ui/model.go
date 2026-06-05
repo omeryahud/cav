@@ -109,9 +109,11 @@ type Model struct {
 	pickCur int
 
 	// preview pane
-	previewOn bool
-	prevCache map[string]string // sessionId -> markdown-rendered recent conversation
-	prevReq   map[string]bool   // sessionId -> preview load requested
+	previewOn     bool
+	prevCache     map[string]string // sessionId -> markdown-rendered recent conversation
+	prevReq       map[string]bool   // sessionId -> preview load requested
+	previewScroll int               // preview lines scrolled up from the bottom (0 = latest)
+	scrollFor     string            // sessionId previewScroll applies to (reset when selection changes)
 
 	status string
 	err    error
@@ -392,6 +394,10 @@ func (m *Model) ensurePreview() tea.Cmd {
 	if s == nil {
 		return nil
 	}
+	if s.SessionID != m.scrollFor { // moved to a different session → show its latest
+		m.previewScroll = 0
+		m.scrollFor = s.SessionID
+	}
 	if _, ok := m.prevCache[s.SessionID]; ok {
 		return nil // already loaded
 	}
@@ -400,6 +406,32 @@ func (m *Model) ensurePreview() tea.Cmd {
 	}
 	m.prevReq[s.SessionID] = true
 	return m.previewCmdFor(s)
+}
+
+// previewBodyLines is the number of lines in the current preview's cached text
+// (the scrollable body below the header).
+func (m *Model) previewBodyLines() int {
+	s := m.current()
+	if s == nil {
+		return 0
+	}
+	if txt, ok := m.prevCache[s.SessionID]; ok && txt != "" {
+		return strings.Count(txt, "\n") + 1
+	}
+	return 0
+}
+
+// scrollPreview scrolls the preview by delta lines (positive = toward older
+// content), clamped so it can't move past the top or the latest content.
+func (m *Model) scrollPreview(delta int) {
+	if !m.showPreview() {
+		return
+	}
+	maxOff := m.previewBodyLines() - m.previewBodyHeight()
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	m.previewScroll = clamp(m.previewScroll+delta, 0, maxOff)
 }
 
 // recomputePick filters + ranks the directory candidates by the input value.

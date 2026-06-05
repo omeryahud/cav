@@ -280,7 +280,6 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 }
 
 func (m *Model) previewLines(h int) []string {
-	header := hintStyle.Render("─ preview ─")
 	var body []string
 	s := m.current()
 	switch {
@@ -298,12 +297,24 @@ func (m *Model) previewLines(h int) []string {
 			}
 		}
 	}
-	// Bottom-anchor: when the conversation is taller than the pane, clip from
-	// the top so the most recent lines stay pinned to the bottom.
+	// Window the body to the pane: bottom-anchored, offset upward by previewScroll
+	// (ctrl+u/ctrl+d, pgup/pgdn). The header arrows show which way more exists.
+	hdr := "─ preview ─"
 	if avail := h - 1; avail > 0 && len(body) > avail {
-		body = body[len(body)-avail:]
+		maxOff := len(body) - avail
+		off := clamp(m.previewScroll, 0, maxOff)
+		end := len(body) - off
+		body = body[end-avail : end]
+		switch {
+		case off >= maxOff:
+			hdr = "─ preview ↓ ─" // at top; more below
+		case off > 0:
+			hdr = "─ preview ↑↓ ─" // middle
+		default:
+			hdr = "─ preview ↑ ─" // at bottom; more above
+		}
 	}
-	return fit(append([]string{header}, body...), h)
+	return fit(append([]string{hintStyle.Render(hdr)}, body...), h)
 }
 
 func (m *Model) pickerLines(h, width int) []string {
@@ -357,7 +368,7 @@ func (m *Model) helpBar() string {
 	binds := []struct{ k, d string }{
 		{"↑/↓", "move"}, {"↵/→", open}, {"n", "new"}, {"N", "new project"}, {"R", "rename"},
 		{"d", "remove"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
-		{"J/K", "reorder"}, {"p", "preview"}, {"/", "filter"}, {"f", "search"},
+		{"J/K", "reorder"}, {"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
 	}
 	parts := make([]string, len(binds))
