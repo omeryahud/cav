@@ -1,6 +1,5 @@
 // Package preview extracts human-readable conversation snippets from a
-// session's transcript: a recent tail for the preview pane, and the single
-// last message for the session-list rows.
+// session's transcript: a recent tail for the (non-live) preview pane.
 package preview
 
 import (
@@ -61,39 +60,6 @@ func Recent(sessionID string, n int) []Snippet {
 	return out
 }
 
-// Last returns the most recent user/assistant message, tail-reading the file
-// so it stays cheap even on large transcripts.
-func Last(sessionID string) (role, text string) {
-	path := findTranscript(sessionID)
-	if path == "" {
-		return "", ""
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return "", ""
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return "", ""
-	}
-	const window = 128 * 1024
-	if fi.Size() > window {
-		_, _ = f.Seek(fi.Size()-window, io.SeekStart)
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return "", ""
-	}
-	lines := strings.Split(string(data), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if sn, ok := parseLine([]byte(lines[i])); ok {
-			return sn.Role, collapse(sn.Text) // single-line for the list row
-		}
-	}
-	return "", ""
-}
-
 func parseLine(b []byte) (Snippet, bool) {
 	var e entry
 	if json.Unmarshal(b, &e) != nil {
@@ -135,8 +101,6 @@ func extractText(raw json.RawMessage) string {
 	}
 	return ""
 }
-
-func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func findTranscript(sessionID string) string {
 	home, err := os.UserHomeDir()

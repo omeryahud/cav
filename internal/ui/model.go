@@ -50,16 +50,12 @@ const (
 	modeNewProject
 )
 
-// lastMsg is the most recent message of a session, shown on its list row.
-type lastMsg struct{ role, text string }
-
 // messages
 type (
 	refreshResult struct {
 		sessions []claude.Session
 		roster   claude.Roster
 		states   map[string]string
-		last     map[string]lastMsg
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
@@ -109,9 +105,6 @@ type Model struct {
 	pickHit []string
 	pickCur int
 
-	// last message per session (shown on list rows)
-	last map[string]lastMsg
-
 	// preview pane
 	previewOn bool
 	prevCache map[string]string // sessionId -> markdown-rendered recent conversation
@@ -140,7 +133,6 @@ func New() (*Model, error) {
 		prevCache:   map[string]string{},
 		prevReq:     map[string]bool{},
 		states:      map[string]string{},
-		last:        map[string]lastMsg{},
 		justStopped: map[string]bool{},
 	}, nil
 }
@@ -199,12 +191,7 @@ func refreshCmd() tea.Msg {
 		seen[j.SessionID] = true
 	}
 
-	last := make(map[string]lastMsg, len(sessions))
-	for _, s := range sessions {
-		role, text := preview.Last(s.SessionID)
-		last[s.SessionID] = lastMsg{role: role, text: text}
-	}
-	return refreshResult{sessions: sessions, roster: roster, states: states, last: last}
+	return refreshResult{sessions: sessions, roster: roster, states: states}
 }
 
 func tickCmd() tea.Cmd {

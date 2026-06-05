@@ -27,7 +27,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.all = applyOrder(m.filterDismissed(msg.sessions), m.order.IDs())
 		m.roster = msg.roster
 		m.states = msg.states
-		m.last = msg.last
 		// Drop optimistic stop-hides once confirmed (state is stopped) or the
 		// session is gone; statusOf then keeps genuinely-stopped ones hidden.
 		if len(m.justStopped) > 0 {

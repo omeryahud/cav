@@ -247,12 +247,8 @@ func (m *Model) groupedVisual(width int) ([]string, int) {
 
 func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 	st := m.statusOf(s)
-	msg := m.last[s.SessionID].text
-	if msg == "" {
-		msg = "—"
-	}
-	body := fmt.Sprintf("%-18s %-8s %4s  %s",
-		truncate(m.displayName(s), 18), statusLabelFor(st), humanAge(s.Started()), msg)
+	body := fmt.Sprintf("%-18s %-8s %4s",
+		truncate(m.displayName(s), 18), statusLabelFor(st), humanAge(s.Started()))
 	avail := width - 4 // marker(2) + dot(1) + space(1)
 	if avail < 1 {
 		avail = 1

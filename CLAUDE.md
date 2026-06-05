@@ -121,8 +121,9 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 
 - **Grouping** (default on, `o` toggles to manual order): by cwd, then status.
   Group header = directory **name** (bold) with the **full path faint on its own
-  line**, both clipped to the column. Rows show each session's **last message**
-  (not the cwd — that's in the header).
+  line**, both clipped to the column. Rows show only **name · status · age** — no
+  conversation snippet (that lives in the preview pane); cav doesn't read
+  transcripts per-tick for the list.
 - **Stopped window:** stopped sessions live in a **separate window**, not the main
   list. `s` switches between the main (active) window and the stopped window.
   Selecting a stopped session and pressing `↵`/`→` **resumes** it (see Open/resume)
