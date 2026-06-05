@@ -72,9 +72,9 @@ type (
 		id   string
 		text string // markdown rendered to ANSI at load time
 	}
-	// openProjectMsg follows a successful "new project" create: open (attach to)
-	// the freshly created session by its job id.
-	openProjectMsg struct {
+	// openCreatedMsg asks the UI to open (attach to) a freshly-created session
+	// (from either n or N) by its job id.
+	openCreatedMsg struct {
 		jobID string
 		label string
 	}
@@ -215,10 +215,15 @@ func createCmd(cwd, name, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
-		if _, err := claude.Create(ctx, cwd, name, prompt); err != nil {
+		jobID, err := claude.Create(ctx, cwd, name, prompt)
+		if err != nil {
 			return actionMsg{err: err}
 		}
-		return actionMsg{note: "session created"}
+		label := name
+		if label == "" {
+			label = filepath.Base(cwd)
+		}
+		return openCreatedMsg{jobID: jobID, label: label}
 	}
 }
 
@@ -250,7 +255,7 @@ func newProjectCmd(cwd, name, prompt string) tea.Cmd {
 		if err != nil {
 			return actionMsg{err: err}
 		}
-		return openProjectMsg{jobID: jobID, label: name}
+		return openCreatedMsg{jobID: jobID, label: name}
 	}
 }
 

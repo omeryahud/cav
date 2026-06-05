@@ -82,9 +82,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recompute()
 		return m, nil
 
-	case openProjectMsg:
-		// New project session created; hand the terminal to it (like open). If
-		// the job id couldn't be parsed, just refresh so it shows in the list.
+	case openCreatedMsg:
+		// Freshly-created session (n or N); hand the terminal to it (like open).
+		// If the job id couldn't be parsed, just refresh so it shows in the list.
 		if msg.jobID == "" {
 			m.status = "created " + msg.label + " — press r, then ↵ to open it"
 			return m, refreshCmd
