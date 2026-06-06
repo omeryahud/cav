@@ -168,7 +168,7 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   reachable via the `claude` CLI; undo by editing that file. The confirm prompt
   names which action will run.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
-  stopped window) · `n` new (opens it) · `N` new project (new dir, opens it) · `R` rename ·
+  stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
   `d` remove · `l` logs · `o` group ·
   `s` stopped-window toggle · `J/K` reorder · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
   scroll preview · `/` filter (metadata) ·
@@ -190,16 +190,18 @@ The dir picker is **self-contained**: native Go walk (depth-capped, noise dirs
 pruned), no dependency on `fd` or the user's `cdf`/`cdfpaths.txt`.
 
 Both create flows are a small wizard — **session name, then an initial prompt**
-(both optional, in that order) — and then they create the session and immediately
-**open (attach)** it, so you land right in it:
+(both optional, in that order) — and then they create the session and
+**highlight it in the list** (move the cursor to it) rather than attaching:
 - `n` (new session): fuzzy-pick an existing directory, then name → prompt.
 - `N` (**new project**): type a name → cav makes
   `~/go/src/github.com/omeryahud/<name>` → session name (defaults to that dir) →
   prompt (empty = idle).
 
 `claude.Create` parses the new job id out of `claude --bg`'s output
-(`backgrounded · <id> …`) so cav knows what to attach (`--bg` ignores
-`--session-id`, so we can't choose the id ourselves).
+(`backgrounded · <id> …`); a new session registers with the daemon
+asynchronously, so cav stashes that id (`selectJobID`) and moves the cursor to
+the session once it shows up in a refresh (the periodic tick catches it).
+(`--bg` ignores `--session-id`, so we can't choose the id ourselves.)
 
 ## Conventions
 

@@ -42,6 +42,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.recompute()
+		// A just-created session (n/N) registers asynchronously; once it appears
+		// in the list, move the cursor to it (highlight it) instead of attaching.
+		if m.selectJobID != "" {
+			if i := m.viewIndexByJobID(m.selectJobID); i >= 0 {
+				m.cursor = i
+				m.previewScroll = 0
+				m.selectJobID = ""
+			}
+		}
 		// Keep the selected session's preview fresh: reload it each tick and
 		// overwrite the cache silently (no "loading…" flicker).
 		if m.showPreview() {
@@ -82,18 +91,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recompute()
 		return m, nil
 
-	case openCreatedMsg:
-		// Freshly-created session (n or N); hand the terminal to it (like open).
-		// If the job id couldn't be parsed, just refresh so it shows in the list.
-		if msg.jobID == "" {
-			m.status = "created " + msg.label + " — press r, then ↵ to open it"
-			return m, refreshCmd
-		}
+	case createdMsg:
+		// Freshly-created session (n or N). Don't attach — refresh, and once the
+		// new session shows up, highlight it (cursor moves to it; see refreshResult).
 		m.status = "created " + msg.label
-		label := msg.label
-		return m, tea.ExecProcess(claude.AttachCmd(msg.jobID), func(error) tea.Msg {
-			return actionMsg{note: "← back from " + label}
-		})
+		m.selectJobID = msg.jobID // "" if the id couldn't be parsed → just won't auto-select
+		return m, refreshCmd
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)

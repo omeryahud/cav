@@ -72,9 +72,9 @@ type (
 		id   string
 		text string // markdown rendered to ANSI at load time
 	}
-	// openCreatedMsg asks the UI to open (attach to) a freshly-created session
-	// (from either n or N) by its job id.
-	openCreatedMsg struct {
+	// createdMsg follows a session create (n or N): the UI selects (highlights)
+	// the new session in the list once it appears, keyed by its job id.
+	createdMsg struct {
 		jobID string
 		label string
 	}
@@ -101,6 +101,7 @@ type Model struct {
 	newCWD       string          // cwd for a pending new session
 	newName      string          // session name entered in the create wizard
 	newIsProject bool            // create wizard: N (make a new dir) vs n (existing dir)
+	selectJobID  string          // job id of a just-created session to highlight once it appears
 	pending      *claude.Session // session awaiting delete confirmation
 
 	// new-session directory picker
@@ -225,7 +226,7 @@ func createCmd(cwd, name, prompt string) tea.Cmd {
 		if label == "" {
 			label = filepath.Base(cwd)
 		}
-		return openCreatedMsg{jobID: jobID, label: label}
+		return createdMsg{jobID: jobID, label: label}
 	}
 }
 
@@ -257,7 +258,7 @@ func newProjectCmd(cwd, name, prompt string) tea.Cmd {
 		if err != nil {
 			return actionMsg{err: err}
 		}
-		return openCreatedMsg{jobID: jobID, label: name}
+		return createdMsg{jobID: jobID, label: name}
 	}
 }
 
@@ -324,6 +325,17 @@ func (m *Model) current() *claude.Session {
 		return nil
 	}
 	return &m.view[m.cursor]
+}
+
+// viewIndexByJobID returns the index in the visible view of the session with the
+// given job id, or -1 if it isn't currently shown.
+func (m *Model) viewIndexByJobID(jobID string) int {
+	for i := range m.view {
+		if m.roster[m.view[i].SessionID] == jobID {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m *Model) jobID(s *claude.Session) string {
