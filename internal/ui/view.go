@@ -171,8 +171,11 @@ func (m *Model) indicators() string {
 	if m.matchIDs != nil {
 		parts = append(parts, "search")
 	}
-	if !m.group {
+	switch m.groupMode {
+	case groupNone:
 		parts = append(parts, "manual-order")
+	case groupStatusDir:
+		parts = append(parts, "group:status→dir")
 	}
 	if m.stoppedView {
 		parts = append(parts, "s: back to active")
@@ -193,7 +196,7 @@ func (m *Model) listLines(h, width int) []string {
 		}
 		return fit([]string{dimStyle.Render(empty)}, h)
 	}
-	if m.group {
+	if m.groupMode != groupNone {
 		vlines, sel := m.groupedVisual(width)
 		top := windowTop(sel, len(vlines), h)
 		end := top + h
@@ -211,33 +214,42 @@ func (m *Model) listLines(h, width int) []string {
 	return fit(lines, h)
 }
 
-// groupedVisual renders the view with a cwd header per directory and a status
-// sub-header per bucket, returning the lines and the visual index of the
-// selected session's row (so the caller can scroll it into view).
+// groupedVisual renders the view with two header levels, ordered by groupMode:
+// dir→status shows a cwd header then a status sub-header; status→dir shows a
+// status header then a cwd sub-header. Returns the lines and the visual index of
+// the selected row (so the caller can scroll it into view).
 func (m *Model) groupedVisual(width int) ([]string, int) {
 	var lines []string
 	sel := 0
+	byDir := m.groupMode == groupDirStatus
 	lastCWD, lastRank := "\x00", -1
 	for i := range m.view {
 		s := m.view[i]
-		if s.CWD != lastCWD {
-			if len(lines) > 0 {
-				lines = append(lines, "")
+		rank := statusRank(m.statusOf(s))
+		if byDir {
+			if s.CWD != lastCWD {
+				if len(lines) > 0 {
+					lines = append(lines, "")
+				}
+				lines = append(lines, cwdHeaderLines(s.CWD, width, 0)...)
+				lastCWD, lastRank = s.CWD, -1
 			}
-			clean := strings.TrimRight(s.CWD, "/")
-			name := filepath.Base(clean)
-			if name == "" || name == "." {
-				name = clean
+			if rank != lastRank {
+				lines = append(lines, statusHeaderLine(rank, width, 2))
+				lastRank = rank
 			}
-			// Two lines, each truncated to the column width so neither bleeds
-			// into the preview pane: bold name, then the faint full path.
-			lines = append(lines, cwdHeader.Render(truncate(name, width)))
-			lines = append(lines, cwdPath.Render("  "+truncate(homeShorten(clean), width-2)))
-			lastCWD, lastRank = s.CWD, -1
-		}
-		if r := statusRank(m.statusOf(s)); r != lastRank {
-			lines = append(lines, bucketStyle(r).Render("  "+bucketLabel(r)))
-			lastRank = r
+		} else {
+			if rank != lastRank {
+				if len(lines) > 0 {
+					lines = append(lines, "")
+				}
+				lines = append(lines, statusHeaderLine(rank, width, 0))
+				lastRank, lastCWD = rank, "\x00"
+			}
+			if s.CWD != lastCWD {
+				lines = append(lines, cwdHeaderLines(s.CWD, width, 2)...)
+				lastCWD = s.CWD
+			}
 		}
 		if i == m.cursor {
 			sel = len(lines)
@@ -245,6 +257,26 @@ func (m *Model) groupedVisual(width int) ([]string, int) {
 		lines = append(lines, m.rowLine(s, i == m.cursor, m.roster[s.SessionID] != "", width))
 	}
 	return lines, sel
+}
+
+// cwdHeaderLines renders a directory header — bold base name, then the faint full
+// path on its own line — each indented and clipped to the column width.
+func cwdHeaderLines(cwd string, width, indent int) []string {
+	clean := strings.TrimRight(cwd, "/")
+	name := filepath.Base(clean)
+	if name == "" || name == "." {
+		name = clean
+	}
+	pad := strings.Repeat(" ", indent)
+	return []string{
+		cwdHeader.Render(pad + truncate(name, width-indent)),
+		cwdPath.Render(pad + "  " + truncate(homeShorten(clean), width-indent-2)),
+	}
+}
+
+// statusHeaderLine renders a status bucket label, indented and color-coded.
+func statusHeaderLine(rank, width, indent int) string {
+	return bucketStyle(rank).Render(truncate(strings.Repeat(" ", indent)+bucketLabel(rank), width))
 }
 
 func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {

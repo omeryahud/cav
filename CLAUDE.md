@@ -125,11 +125,14 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 
 ## UI behavior
 
-- **Grouping** (default on, `o` toggles to manual order): by cwd, then status.
-  Group header = directory **name** (bold) with the **full path faint on its own
-  line**, both clipped to the column. Rows show only **name · status · age** — no
-  conversation snippet (that lives in the preview pane); cav doesn't read
-  transcripts per-refresh for the list.
+- **Grouping** (`o` cycles three `groupMode`s): **dir→status** (default; by cwd,
+  then status) → **status→dir** (by status, then cwd) → **none** (manual order).
+  A directory header is the **name** (bold) with the **full path faint on its own
+  line**; a status header is the color-coded bucket label. Whichever key is the
+  *secondary* one is shown indented under the primary. The active non-default mode
+  shows in the header (`group:status→dir` / `manual-order`). Rows show only
+  **name · status · age** — no conversation snippet (that lives in the preview
+  pane); cav doesn't read transcripts per-refresh for the list.
 - **Stopped window:** stopped sessions live in a **separate window**, not the main
   list. `s` switches between the main (active) window and the stopped window.
   Selecting a stopped session and pressing `↵`/`→` **resumes** it (see Open/resume)
@@ -177,7 +180,7 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   names which action will run.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
-  `d` remove · `l` logs · `o` group ·
+  `d` remove · `l` logs · `o` group (cycle dir→status / status→dir / off) ·
   `s` stopped-window toggle · `J/K` reorder · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
   scroll preview · `/` filter (metadata) ·
   `f` search (transcript content) · `esc` clear · `r` refresh · `q` quit.

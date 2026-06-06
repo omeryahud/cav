@@ -162,7 +162,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgdown":
 		m.scrollPreview(-max(1, m.previewBodyHeight()-1))
 	case "o":
-		m.group = !m.group
+		m.groupMode = (m.groupMode + 1) % 3 // cycle: none → dir→status → status→dir
 		m.recompute()
 	case "s":
 		m.stoppedView = !m.stoppedView

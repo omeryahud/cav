@@ -41,6 +41,16 @@ const recentDays = 7
 // that the list refreshes continuously; a selection change loads immediately.
 const previewRefresh = 2 * time.Second
 
+// grouping is how the session list is organized; the o key cycles through these
+// in order.
+type grouping int
+
+const (
+	groupNone      grouping = iota // manual order (no grouping)
+	groupDirStatus                 // by cwd, then status (the default)
+	groupStatusDir                 // by status, then cwd
+)
+
 type mode int
 
 const (
@@ -92,7 +102,7 @@ type Model struct {
 	states       map[string]string // sessionId -> job lifecycle state (working/done/blocked)
 	names        *names.Store      // cav-local display-name overrides
 	dismissed    *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
-	group        bool              // true: group by cwd then status; false: manual order
+	groupMode    grouping          // none (manual) | dir→status | status→dir (o cycles)
 	stoppedView  bool              // true: showing the stopped-sessions window (s toggles)
 	justStopped  map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
 	cursor       int
@@ -140,7 +150,7 @@ func New() (*Model, error) {
 		dismissed:   dismiss.Load(),
 		input:       ti,
 		mode:        modeList,
-		group:       true,
+		groupMode:   groupDirStatus,
 		previewOn:   true,
 		prevCache:   map[string]string{},
 		prevReq:     map[string]bool{},
@@ -574,7 +584,8 @@ func (m *Model) recompute() {
 		}
 		v = append(v, s)
 	}
-	if m.group {
+	switch m.groupMode {
+	case groupDirStatus:
 		sort.SliceStable(v, func(i, j int) bool {
 			a, b := v[i], v[j]
 			if a.CWD != b.CWD {
@@ -585,7 +596,19 @@ func (m *Model) recompute() {
 			}
 			return a.StartedAt > b.StartedAt
 		})
+	case groupStatusDir:
+		sort.SliceStable(v, func(i, j int) bool {
+			a, b := v[i], v[j]
+			if ra, rb := statusRank(m.statusOf(a)), statusRank(m.statusOf(b)); ra != rb {
+				return ra < rb
+			}
+			if a.CWD != b.CWD {
+				return a.CWD < b.CWD
+			}
+			return a.StartedAt > b.StartedAt
+		})
 	}
+	// groupNone leaves v in the manual (applyOrder) order.
 	m.view = v
 	m.cursor = clamp(m.cursor, 0, lastIndex(len(v)))
 }
@@ -718,7 +741,7 @@ func (m *Model) reorder(delta int) {
 		m.status = "reordering is only available in the active window"
 		return
 	}
-	if m.group {
+	if m.groupMode != groupNone {
 		m.status = "press o for manual order, then reorder"
 		return
 	}
