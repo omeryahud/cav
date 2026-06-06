@@ -393,12 +393,12 @@ func (m *Model) footerBlock() string {
 }
 
 func (m *Model) helpBar() string {
-	open, stopped := "open", "stopped"
+	stopped := "stopped"
 	if m.stoppedView {
-		open, stopped = "resume", "back"
+		stopped = "back"
 	}
 	binds := []struct{ k, d string }{
-		{"↑/↓", "move"}, {"↵/→", open}, {"n", "new"}, {"N", "new project"}, {"R", "rename"},
+		{"n", "new"}, {"N", "new project"}, {"R", "rename"},
 		{"d", "remove"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"J/K", "reorder"}, {"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
