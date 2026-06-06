@@ -43,8 +43,9 @@ after.
   - `client.go` — `List`, `Stop`, `Create`, `AttachCmd`, `LogsShellCmd`, `Logs`,
     `Roster`/`LoadRoster`/`JobID`, `JobState`, `JobRecord`/`ScanJobs`.
 - `internal/ui/` — the Bubble Tea app.
-  - `model.go` — `Model`, messages, commands (incl. `refreshCmd` merge), the
-    `statusOf`/`statusRank`/`bucketLabel` status model, and filter/sort helpers.
+  - `model.go` — `Model`, messages, commands (incl. the `doRefresh` merge run by
+    the background `refreshLoop`), the `statusOf`/`statusRank`/`bucketLabel`
+    status model, and filter/sort helpers.
   - `update.go` — `Update` + per-mode key handlers.
   - `view.go` — layout + rendering, Lip Gloss styles, and `renderSnippets`
     (markdown → ANSI via glamour).
@@ -84,7 +85,12 @@ roster worker key), **NOT the full session UUID**. They coincide for most
 sessions but differ after branch/respawn (e.g. session `72cdfc0f` ↔ job
 `cc12801d`). Passing the session id yields `No job matching ...`.
 
-`refreshCmd` (in `model.go`) merges them:
+`doRefresh` (in `model.go`) merges them. It runs **continuously in a background
+goroutine** (`refreshLoop`) — no fixed poll delay, so the list updates as fast as
+a refresh completes (~0.5s, bounded by `claude agents --json`; a small `minRefresh`
+floor only guards against a hot spin if a refresh returns instantly). Results flow
+to the update loop via a channel (`waitRefresh`), which re-arms itself each time.
+The merge:
 1. List live sessions; build `sessionId → jobId` from `LoadRoster` (correct
    post-branch). State for live sessions comes from `JobState(jobId)`.
 2. Add on-disk `ScanJobs` records **not** already covered by a live session
@@ -123,13 +129,15 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   Group header = directory **name** (bold) with the **full path faint on its own
   line**, both clipped to the column. Rows show only **name · status · age** — no
   conversation snippet (that lives in the preview pane); cav doesn't read
-  transcripts per-tick for the list.
+  transcripts per-refresh for the list.
 - **Stopped window:** stopped sessions live in a **separate window**, not the main
   list. `s` switches between the main (active) window and the stopped window.
   Selecting a stopped session and pressing `↵`/`→` **resumes** it (see Open/resume)
   and returns to the main window. Stopping a live session (see **Remove**) also
   moves it here.
-- **Preview pane** (right, 50% width, `p` toggles), refreshed each tick:
+- **Preview pane** (right, 50% width, `p` toggles), reloaded on a ~2s throttle
+  (`previewRefresh`) even though the list refreshes continuously, so `claude logs`
+  isn't hammered; a selection change reloads it immediately:
   - For a session with a **live worker**, it shows the **actual terminal screen**:
     cav pulls `claude logs` (the raw recent terminal output) and reconstructs it
     through a **vt10x emulator** (`internal/termview`), rendered with color. The
@@ -200,7 +208,8 @@ Both create flows are a small wizard — **session name, then an initial prompt*
 `claude.Create` parses the new job id out of `claude --bg`'s output
 (`backgrounded · <id> …`); a new session registers with the daemon
 asynchronously, so cav stashes that id (`selectJobID`) and moves the cursor to
-the session once it shows up in a refresh (the periodic tick catches it).
+the session once it shows up in a refresh (the continuous background loop catches
+it, ~0.5s).
 (`--bg` ignores `--session-id`, so we can't choose the id ourselves.)
 
 ## Conventions

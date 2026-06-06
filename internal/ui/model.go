@@ -37,6 +37,10 @@ const (
 // recentDays bounds how far back non-live on-disk sessions are shown.
 const recentDays = 7
 
+// previewRefresh throttles background preview reloads (claude logs is ~0.5s) now
+// that the list refreshes continuously; a selection change loads immediately.
+const previewRefresh = 2 * time.Second
+
 type mode int
 
 const (
@@ -78,7 +82,6 @@ type (
 		jobID string
 		label string
 	}
-	tickMsg struct{}
 )
 
 // Model is the cav application state.
@@ -115,6 +118,9 @@ type Model struct {
 	prevReq       map[string]bool   // sessionId -> preview load requested
 	previewScroll int               // preview lines scrolled up from the bottom (0 = latest)
 	scrollFor     string            // sessionId previewScroll applies to (reset when selection changes)
+	prevAt        time.Time         // last preview (re)load time, to throttle background reloads
+
+	refreshes chan refreshResult // continuous background refresh results (see refreshLoop)
 
 	status string
 	err    error
@@ -143,14 +149,16 @@ func New() (*Model, error) {
 	}, nil
 }
 
-// Init kicks off the first refresh and the periodic tick.
+// Init starts the background refresh loop and begins consuming its results.
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(refreshCmd, tickCmd())
+	m.refreshes = make(chan refreshResult)
+	go refreshLoop(m.refreshes)
+	return waitRefresh(m.refreshes)
 }
 
 // ---- commands ----
 
-func refreshCmd() tea.Msg {
+func doRefresh() refreshResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	live, _ := claude.List(ctx) // ignore errors: still show durable on-disk jobs
@@ -200,8 +208,26 @@ func refreshCmd() tea.Msg {
 	return refreshResult{sessions: sessions, roster: roster, states: states}
 }
 
-func tickCmd() tea.Cmd {
-	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
+// refreshLoop runs the session refresh continuously in the background — no fixed
+// poll delay — so the list (status, ages, new sessions) updates as fast as a
+// refresh completes (~0.5s, bounded by `claude agents --json`). minRefresh is a
+// small floor that only matters if a refresh returns very fast (e.g. the daemon
+// is down), to avoid a hot spin.
+func refreshLoop(ch chan<- refreshResult) {
+	const minRefresh = 250 * time.Millisecond
+	for {
+		start := time.Now()
+		rr := doRefresh()
+		if d := time.Since(start); d < minRefresh {
+			time.Sleep(minRefresh - d)
+		}
+		ch <- rr
+	}
+}
+
+// waitRefresh delivers the next background refresh result to the update loop.
+func waitRefresh(ch <-chan refreshResult) tea.Cmd {
+	return func() tea.Msg { return <-ch }
 }
 
 func searchCmd(q string) tea.Cmd {
@@ -417,6 +443,7 @@ func (m *Model) ensurePreview() tea.Cmd {
 		return nil // load already in flight
 	}
 	m.prevReq[s.SessionID] = true
+	m.prevAt = time.Now()
 	return m.previewCmdFor(s)
 }
 

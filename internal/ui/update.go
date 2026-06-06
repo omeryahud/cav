@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -20,9 +21,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.width, m.height = msg.Width, msg.Height
 		return m, m.ensurePreview()
-
-	case tickMsg:
-		return m, tea.Batch(refreshCmd, tickCmd())
 
 	case refreshResult:
 		m.all = applyOrder(m.filterDismissed(msg.sessions), m.order.IDs())
@@ -49,17 +47,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = i
 				m.previewScroll = 0
 				m.selectJobID = ""
+				m.prevAt = time.Time{} // force a preview load for the newly-selected session
 			}
 		}
-		// Keep the selected session's preview fresh: reload it each tick and
-		// overwrite the cache silently (no "loading…" flicker).
+		// Pump the next background refresh, and reload the selected preview —
+		// throttled (the list now refreshes continuously; selection changes load
+		// immediately via ensurePreview).
+		cmds := []tea.Cmd{waitRefresh(m.refreshes)}
 		if m.showPreview() {
-			if s := m.current(); s != nil {
+			if s := m.current(); s != nil && time.Since(m.prevAt) >= previewRefresh {
+				m.prevAt = time.Now()
 				m.prevReq[s.SessionID] = true
-				return m, m.previewCmdFor(s)
+				cmds = append(cmds, m.previewCmdFor(s))
 			}
 		}
-		return m, nil
+		return m, tea.Batch(cmds...)
 
 	case dirsMsg:
 		m.pickAll = []string(msg)
@@ -83,7 +85,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if msg.note != "" {
 			m.status, m.err = msg.note, nil
 		}
-		return m, refreshCmd
+		return m, nil // the background loop refreshes continuously
 
 	case searchDoneMsg:
 		m.matchIDs = msg.ids
@@ -96,7 +98,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// new session shows up, highlight it (cursor moves to it; see refreshResult).
 		m.status = "created " + msg.label
 		m.selectJobID = msg.jobID // "" if the id couldn't be parsed → just won't auto-select
-		return m, refreshCmd
+		return m, nil             // the background loop will see it and highlight it
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -167,8 +169,9 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.recompute()
 	case "r":
-		m.status = "refreshing…"
-		return m, refreshCmd
+		// The list refreshes continuously in the background; r just clears any
+		// stale status/error and forces an immediate preview reload.
+		m.status, m.err, m.prevAt = "", nil, time.Time{}
 	case "/":
 		m.mode = modeFilter
 		m.input.SetValue(m.filter)
