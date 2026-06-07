@@ -197,8 +197,12 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   (one path per line, `#` comments, `~` expansion). If absent, common dev dirs
   are auto-detected (`~/go/src`, `~/src`, `~/dev`, `~/projects`, ...).
 
-The dir picker is **self-contained**: native Go walk (depth-capped, noise dirs
-pruned), no dependency on `fd` or the user's `cdf`/`cdfpaths.txt`.
+The dir picker uses a native Go walk (depth-capped, noise dirs pruned), no `fd`.
+Beyond cav's own roots it also walks the **`cdf` roots** in `~/.config/cdfpaths.txt`
+(or `$CDFPATHS_FILE`) — same one-path-per-line format — so the picker offers the
+same directories as the `cdf` command, **except `$HOME` itself**: `cdf` walks home
+lazily with `fd`, but cav's eager walk of all of `$HOME` is far too slow/large
+(~120k dirs here).
 
 Both create flows are a small wizard — **session name, then an initial prompt**
 (both optional, in that order) — and then they create the session and

@@ -1,8 +1,9 @@
 // Package dirs enumerates candidate directories for starting a new session.
-// It is self-contained (pure Go, no `fd` and no dependency on the cdf config):
-// roots come from cav's own ~/.config/cav/roots.txt when present, else common
-// dev directories are auto-detected. Each root is walked with a depth cap and
-// the usual noise directories pruned.
+// Pure Go (no `fd`): roots come from cav's own ~/.config/cav/roots.txt when
+// present, else common dev directories are auto-detected; the user's `cdf` roots
+// (~/.config/cdfpaths.txt) are added too, so the picker offers the same dirs as
+// `cdf` — minus $HOME, which is too broad to walk eagerly. Each root is walked
+// with a depth cap and the usual noise directories pruned.
 package dirs
 
 import (
@@ -50,30 +51,66 @@ func configRootsFile() string {
 	return filepath.Join(h, ".config", "cav", "roots.txt")
 }
 
-// roots returns the directories to scan: cav's configured roots if present,
-// else any of the usual dev locations that exist, else $HOME.
+// roots returns the directories to scan: cav's configured roots (or, if none,
+// the usual dev locations) plus the user's cdf roots (see cdfRoots), with $HOME
+// as a last resort.
 func roots() []string {
-	if rs := readList(configRootsFile()); len(rs) > 0 {
-		return rs
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	var rs []string
-	for _, c := range []string{"go/src", "src", "dev", "projects", "code", "work", "repos", "Documents"} {
-		if p := filepath.Join(home, c); isDir(p) {
-			rs = append(rs, p)
+	home, _ := os.UserHomeDir()
+	rs := readList(configRootsFile())
+	if len(rs) == 0 {
+		for _, c := range []string{"go/src", "src", "dev", "projects", "code", "work", "repos", "Documents"} {
+			if p := filepath.Join(home, c); isDir(p) {
+				rs = append(rs, p)
+			}
 		}
 	}
-	if len(rs) == 0 {
+	rs = dedupClean(append(rs, cdfRoots(home)...))
+	if len(rs) == 0 && home != "" {
 		rs = []string{home}
 	}
 	return rs
 }
 
-// readList parses a roots file: one path per line, '#' comments, leading ~
-// expanded, only existing directories kept.
+// cdfRoots returns the directories from the user's cdf path file
+// (~/.config/cdfpaths.txt, or $CDFPATHS_FILE) so the picker offers the same
+// directories as the `cdf` shell command. $HOME itself is skipped: cdf walks it
+// lazily with fd, but cav's eager walk of all of $HOME is far too slow/large.
+func cdfRoots(home string) []string {
+	var out []string
+	for _, p := range readList(cdfPathsFile()) {
+		if home != "" && filepath.Clean(p) == filepath.Clean(home) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func cdfPathsFile() string {
+	if f := os.Getenv("CDFPATHS_FILE"); f != "" {
+		return f
+	}
+	h, _ := os.UserHomeDir()
+	return filepath.Join(h, ".config", "cdfpaths.txt")
+}
+
+// dedupClean drops duplicate paths (compared after Clean), preserving order, so
+// a root listed in several sources is walked only once.
+func dedupClean(paths []string) []string {
+	seen := map[string]bool{}
+	out := paths[:0]
+	for _, p := range paths {
+		if c := filepath.Clean(p); !seen[c] {
+			seen[c] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// readList parses a roots file: one path per line, '#' comments, ${VAR}/$VAR
+// and leading ~ expanded, only existing directories kept. Matches what cdf
+// accepts in its path file.
 func readList(path string) []string {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -89,6 +126,7 @@ func readList(path string) []string {
 		if line == "" {
 			continue
 		}
+		line = os.ExpandEnv(line)
 		if strings.HasPrefix(line, "~") {
 			line = home + line[1:]
 		}
