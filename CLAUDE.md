@@ -191,7 +191,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   scroll preview · `/` filter (metadata; **live fuzzy** — type to narrow
   (subsequence match; the dir/status grouping is kept), `↑/↓` (or `ctrl+j/k`)
   move the selection without leaving the prompt, `↵` opens the selected session
-  directly, and it starts empty each time) · `f` search
+  directly while `tab` just confirms the filter and stays in the list (shift+enter
+  isn't detectable in bubbletea v1), and it starts empty each time) · `f` search
   (transcript content) · `esc` clear · `r` refresh · `q` quit.
 
 ## Config files

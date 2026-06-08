@@ -285,6 +285,13 @@ func (m *Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		m.input.Blur()
 		return m, cmd
+	case "tab":
+		// Confirm the filter and drop to the list WITHOUT opening anything; the
+		// filter stays applied. (shift+enter can't be detected by bubbletea v1, so
+		// tab is the "confirm but don't open" key — enter opens, tab doesn't.)
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
 	// Navigate the live-filtered list without leaving the prompt (fuzzy-finder
 	// style), so the user needn't press enter just to move the selection.
 	case "up", "ctrl+k", "ctrl+p":
