@@ -577,21 +577,45 @@ func applyOrder(ss []claude.Session, ids []string) []claude.Session {
 
 // recompute rebuilds the visible view from the full list + active filters.
 func (m *Model) recompute() {
-	v := make([]claude.Session, 0, len(m.all))
+	q := strings.ToLower(strings.TrimSpace(m.filter))
+	type scored struct {
+		s  claude.Session
+		sc int
+	}
+	hits := make([]scored, 0, len(m.all))
 	for _, s := range m.all {
 		if m.matchIDs != nil && !m.matchIDs[s.SessionID] {
-			continue
-		}
-		if m.filter != "" && !m.sessionMatches(s, m.filter) {
 			continue
 		}
 		if m.isStopped(s) != m.stoppedView {
 			continue // main window shows active sessions; the stopped window shows stopped ones (s toggles)
 		}
-		v = append(v, s)
+		sc := 0
+		if q != "" {
+			if sc = m.sessionScore(s, q); sc < 0 {
+				continue // doesn't fuzzy-match the filter
+			}
+		}
+		hits = append(hits, scored{s, sc})
 	}
-	switch m.groupMode {
-	case groupDirStatus:
+	if q != "" {
+		// Active fuzzy filter: a flat, best-match-first list (fuzzy-finder style)
+		// that overrides the dir/status grouping (listLines renders it flat too).
+		sort.SliceStable(hits, func(i, j int) bool {
+			if hits[i].sc != hits[j].sc {
+				return hits[i].sc > hits[j].sc
+			}
+			return hits[i].s.StartedAt > hits[j].s.StartedAt
+		})
+	}
+	v := make([]claude.Session, len(hits))
+	for i, h := range hits {
+		v[i] = h.s
+	}
+	switch {
+	case q != "":
+		// already ranked by fuzzy score above
+	case m.groupMode == groupDirStatus:
 		sort.SliceStable(v, func(i, j int) bool {
 			a, b := v[i], v[j]
 			if a.CWD != b.CWD {
@@ -602,7 +626,7 @@ func (m *Model) recompute() {
 			}
 			return a.StartedAt > b.StartedAt
 		})
-	case groupStatusDir:
+	case m.groupMode == groupStatusDir:
 		sort.SliceStable(v, func(i, j int) bool {
 			a, b := v[i], v[j]
 			if ra, rb := statusRank(m.statusOf(a)), statusRank(m.statusOf(b)); ra != rb {
@@ -614,10 +638,14 @@ func (m *Model) recompute() {
 			return a.StartedAt > b.StartedAt
 		})
 	}
-	// groupNone leaves v in the manual (applyOrder) order.
+	// groupNone (and no active filter) leaves v in the manual (applyOrder) order.
 	m.view = v
 	m.cursor = clamp(m.cursor, 0, lastIndex(len(v)))
 }
+
+// filtering reports whether the / metadata filter is active (non-blank). While
+// filtering, the list is a flat fuzzy-ranked finder rather than grouped.
+func (m *Model) filtering() bool { return strings.TrimSpace(m.filter) != "" }
 
 // statusOf computes a normalized session status by combining the live
 // agents --json status (busy/idle) with the job lifecycle state. Crucially,
@@ -735,9 +763,36 @@ func bucketLabel(rank int) string {
 	}
 }
 
-func (m *Model) sessionMatches(s claude.Session, f string) bool {
-	hay := strings.ToLower(m.displayName(s) + " " + s.CWD + " " + s.Status + " " + s.Kind + " " + s.SessionID)
-	return strings.Contains(hay, strings.ToLower(f))
+// sessionScore ranks how well a session matches the fuzzy filter query q (q is
+// already lower-cased, trimmed, and non-empty). Higher is better; -1 means no
+// match. A contiguous substring beats a scattered subsequence, and the display
+// name beats the cwd. Subsequence matching is limited to the name and the cwd's
+// leaf dir — fuzzy-matching the full path would match almost any short query
+// (a long path contains nearly any few letters in order). Status/kind/id match
+// only as a substring (so "waiting" or an id prefix work, without hex-id noise).
+func (m *Model) sessionScore(s claude.Session, q string) int {
+	name := strings.ToLower(m.displayName(s))
+	cwd := strings.ToLower(s.CWD)
+	base := cwd
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	meta := strings.ToLower(s.Status + " " + s.Kind + " " + s.SessionID)
+	switch {
+	case strings.Contains(name, q):
+		return 100
+	case strings.Contains(base, q):
+		return 80
+	case strings.Contains(cwd, q):
+		return 70
+	case strings.Contains(meta, q):
+		return 60
+	case subseq(name, q):
+		return 40
+	case subseq(base, q):
+		return 30
+	}
+	return -1
 }
 
 // reorder moves the selected row by delta and persists the new order.

@@ -196,7 +196,7 @@ func (m *Model) listLines(h, width int) []string {
 		}
 		return fit([]string{dimStyle.Render(empty)}, h)
 	}
-	if m.groupMode != groupNone {
+	if m.groupMode != groupNone && !m.filtering() {
 		vlines, sel := m.groupedVisual(width)
 		top := windowTop(sel, len(vlines), h)
 		end := top + h
