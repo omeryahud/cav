@@ -134,9 +134,12 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   A directory header is the **name** (bold) with the **full path faint on its own
   line**; a status header is the color-coded bucket label. Whichever key is the
   *secondary* one is shown indented under the primary. The active non-default mode
-  shows in the header (`group:status→dir` / `manual-order`). Rows show only
-  **name · status · age** — no conversation snippet (that lives in the preview
-  pane); cav doesn't read transcripts per-refresh for the list.
+  shows in the header (`group:status→dir` / `manual-order`). Rows show
+  **dirname/name · status · age** — the cwd's leaf dir is prefixed onto every
+  session name (`rowName`, a display-only decoration computed from the cwd, so it
+  applies to all sessions and isn't part of the editable rename) — no conversation
+  snippet (that lives in the preview pane); cav doesn't read transcripts
+  per-refresh for the list.
 - **Stopped window:** stopped sessions live in a **separate window**, not the main
   list. `s` switches between the main (active) window and the stopped window.
   Selecting a stopped session and pressing `↵`/`→` **resumes** it (see Open/resume)

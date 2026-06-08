@@ -406,6 +406,29 @@ func (m *Model) displayName(s claude.Session) string {
 	return s.Display()
 }
 
+// dirBase is the leaf directory name of a cwd (".../agent-sandbox" →
+// "agent-sandbox"), or "" if there isn't a meaningful one.
+func dirBase(cwd string) string {
+	switch b := filepath.Base(strings.TrimRight(cwd, "/")); b {
+	case "", ".", "/":
+		return ""
+	default:
+		return b
+	}
+}
+
+// rowName is the label shown for a session in the list: its display name prefixed
+// with the cwd's leaf dir ("dirname/name"), so the directory is visible inline on
+// every row. The prefix is a display decoration computed from the cwd — not stored
+// and not part of the editable (rename) name — so it applies uniformly to every
+// session (new and existing) with no double-prefixing.
+func (m *Model) rowName(s claude.Session) string {
+	if d := dirBase(s.CWD); d != "" {
+		return d + "/" + m.displayName(s)
+	}
+	return m.displayName(s)
+}
+
 func (m *Model) showPreview() bool { return m.previewOn && m.width >= previewMinWidth }
 
 // previewWidth is the column width used for the preview pane (and the wrap
