@@ -97,8 +97,12 @@ The merge:
    (dedup by sessionId *and* job id — a branched session shares its job with the
    live one) and updated within `recentDays` (7). This keeps stopped and
    sleep-dropped sessions visible and resumable.
-3. Interactive sessions (no job dir, not in roster) are listed but **not
-   attachable** (open/logs need a job id). They can still be hidden with `d`.
+3. **Interactive** sessions (`kind:"interactive"` from `agents --json` — a plain
+   `claude` REPL, a `!` bash command, or an agent-mode/stream-json child) are
+   **filtered out** in `doRefresh` (step 1), so they never enter `m.all`. cav
+   manages background sessions; these carry no name/status and aren't attachable
+   here, so they were just noise. (`notAttachableReason` keeps a defensive
+   interactive branch in case one ever leaks in via a job dir.)
 
 Transcripts live at `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`; the
 encoding is lossy, so `internal/preview` **globs by `<sessionId>.jsonl`** rather
@@ -171,8 +175,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 - **Remove** (`d`): branches on whether the session has a **live worker**. With one
   (status from `agents --json`), runs `claude stop` — moving it to the stopped
   window (optimistic hide, reconciled on refresh). With **no** live worker
-  (done/complete/error, sleep-dropped, or a non-attachable interactive session),
-  `claude stop` is a no-op (or impossible), so cav instead **hides it in a
+  (done/complete/error, or sleep-dropped), `claude stop` is a no-op, so cav
+  instead **hides it in a
   cav-local dismissed set** (`~/.config/cav/dismissed.json`) and never lists it
   again — dismissing needs only the session id, so it works without a job id.
   Non-destructive: the session stays on disk / keeps running and is still
@@ -182,8 +186,9 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
   `d` remove · `l` logs · `o` group (cycle dir→status / status→dir / off) ·
   `s` stopped-window toggle · `J/K` reorder · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
-  scroll preview · `/` filter (metadata) ·
-  `f` search (transcript content) · `esc` clear · `r` refresh · `q` quit.
+  scroll preview · `/` filter (metadata; **live** — type to narrow, `↑/↓` (or
+  `ctrl+j/k`) move the selection without leaving the prompt, and it starts empty
+  each time) · `f` search (transcript content) · `esc` clear · `r` refresh · `q` quit.
 
 ## Config files
 

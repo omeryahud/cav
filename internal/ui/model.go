@@ -183,6 +183,12 @@ func doRefresh() refreshResult {
 	// 1) Live sessions — resolve job ids from the daemon roster, which holds the
 	//    CURRENT sessionId even after a /branch (a job's state.json can lag).
 	for _, s := range live {
+		if s.Kind == "interactive" {
+			// cav manages background sessions. Interactive workers (a `!` bash
+			// command, an agent-mode/stream-json child, or a plain `claude` REPL)
+			// aren't nameable, statusable, or attachable here — they're noise.
+			continue
+		}
 		sessions = append(sessions, s)
 		seen[s.SessionID] = true
 		if jid := daemon[s.SessionID]; jid != "" {

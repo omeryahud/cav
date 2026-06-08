@@ -382,6 +382,8 @@ func (m *Model) footerBlock() string {
 		status = warnDot.Render(prompt)
 	case m.mode == modePickDir:
 		status = dimStyle.Render("↑/↓ or ctrl+j/k select · ↵ choose · esc cancel")
+	case m.mode == modeFilter:
+		status = dimStyle.Render("↑/↓ or ctrl+j/k navigate · ↵ keep filter · esc clear")
 	case m.mode == modeRename:
 		status = dimStyle.Render("↵ save · esc cancel · empty name clears the override")
 	case m.err != nil:

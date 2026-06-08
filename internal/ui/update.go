@@ -174,10 +174,11 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status, m.err, m.prevAt = "", nil, time.Time{}
 	case "/":
 		m.mode = modeFilter
-		m.input.SetValue(m.filter)
+		m.filter = "" // start a fresh filter — don't carry the previous query
+		m.input.SetValue("")
 		m.input.Placeholder = "filter name / cwd / status…"
-		m.input.CursorEnd()
-		return m, m.input.Focus()
+		m.recompute()
+		return m, tea.Batch(m.input.Focus(), m.ensurePreview())
 	case "f":
 		m.mode = modeSearch
 		m.input.SetValue("")
@@ -274,12 +275,20 @@ func (m *Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		m.input.Blur()
 		return m, nil
+	// Navigate the live-filtered list without leaving the prompt (fuzzy-finder
+	// style), so the user needn't press enter just to move the selection.
+	case "up", "ctrl+k", "ctrl+p":
+		m.cursor = clamp(m.cursor-1, 0, lastIndex(len(m.view)))
+		return m, m.ensurePreview()
+	case "down", "ctrl+j", "ctrl+n":
+		m.cursor = clamp(m.cursor+1, 0, lastIndex(len(m.view)))
+		return m, m.ensurePreview()
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.filter = m.input.Value()
 	m.recompute()
-	return m, cmd
+	return m, tea.Batch(cmd, m.ensurePreview())
 }
 
 func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
