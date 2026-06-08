@@ -229,38 +229,49 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return actionMsg{} // less exit status is not meaningful here
 		})
 	case "enter", "right":
-		s := m.current()
-		if s == nil {
-			break
+		if cmd := m.openCurrent(); cmd != nil {
+			return m, cmd
 		}
-		if !m.canAttach(s) {
-			m.status = "can't open " + m.displayName(*s) + " — " + notAttachableReason(*s)
-			break
-		}
-		id, label := m.jobID(s), m.displayName(*s) // attach by job id, not session id
-		note := "← back from " + label
-		if m.stoppedView {
-			// Resuming a stopped session is the same `claude attach` — the CLI
-			// respawns it from the stored respawn flags. Once alive it's an
-			// active session, so leave the stopped window now; the post-attach
-			// refresh reclassifies it out of the stopped bucket into the main one.
-			m.stoppedView = false
-			m.cursor = 0
-			m.recompute()
-			note = "↩ resumed " + label
-		}
-		// Hand the current terminal to `claude attach`. When the user leaves
-		// the conversation, ExecProcess resumes cav in place with all state
-		// intact. The attach exit code is ignored — leaving via Ctrl+Z/Ctrl+C
-		// is a normal, non-error exit.
-		return m, tea.ExecProcess(claude.AttachCmd(id), func(error) tea.Msg {
-			return actionMsg{note: note}
-		})
+		// Nothing to open (empty list, or not attachable — openCurrent set the
+		// status); fall through to refresh the preview.
 	case "esc":
 		m.filter, m.matchIDs, m.status = "", nil, ""
 		m.recompute()
 	}
 	return m, m.ensurePreview()
+}
+
+// openCurrent attaches to the selected session — the enter/right action, shared
+// by the list and the filter prompt. It hands the terminal to `claude attach`
+// (resuming a stopped session, and leaving the stopped window if we were in it)
+// and returns that command, or nil if there's nothing to open or the selection
+// isn't attachable (a status message is set in that case). When the user leaves
+// the conversation, ExecProcess resumes cav in place with all state intact; the
+// attach exit code is ignored — leaving via Ctrl+Z/Ctrl+C is a normal exit.
+func (m *Model) openCurrent() tea.Cmd {
+	s := m.current()
+	if s == nil {
+		return nil
+	}
+	if !m.canAttach(s) {
+		m.status = "can't open " + m.displayName(*s) + " — " + notAttachableReason(*s)
+		return nil
+	}
+	id, label := m.jobID(s), m.displayName(*s) // attach by job id, not session id
+	note := "← back from " + label
+	if m.stoppedView {
+		// Resuming a stopped session is the same `claude attach` — the CLI
+		// respawns it from the stored respawn flags. Once alive it's an active
+		// session, so leave the stopped window now; the post-attach refresh
+		// reclassifies it out of the stopped bucket into the main one.
+		m.stoppedView = false
+		m.cursor = 0
+		m.recompute()
+		note = "↩ resumed " + label
+	}
+	return tea.ExecProcess(claude.AttachCmd(id), func(error) tea.Msg {
+		return actionMsg{note: note}
+	})
 }
 
 func (m *Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -272,9 +283,12 @@ func (m *Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.recompute()
 		return m, nil
 	case "enter":
+		// Open the selected session directly — a single enter from the filter,
+		// rather than confirming the filter and pressing enter again in the list.
+		cmd := m.openCurrent()
 		m.mode = modeList
 		m.input.Blur()
-		return m, nil
+		return m, cmd
 	// Navigate the live-filtered list without leaving the prompt (fuzzy-finder
 	// style), so the user needn't press enter just to move the selection.
 	case "up", "ctrl+k", "ctrl+p":
