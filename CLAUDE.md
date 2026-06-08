@@ -187,9 +187,9 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   `d` remove · `l` logs · `o` group (cycle dir→status / status→dir / off) ·
   `s` stopped-window toggle · `J/K` reorder · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
   scroll preview · `/` filter (metadata; **live fuzzy** — type to narrow
-  (subsequence match, ranked best-first as a flat list overriding the grouping),
-  `↑/↓` (or `ctrl+j/k`) move the selection without leaving the prompt, `↵` opens
-  the selected session directly, and it starts empty each time) · `f` search
+  (subsequence match; the dir/status grouping is kept), `↑/↓` (or `ctrl+j/k`)
+  move the selection without leaving the prompt, `↵` opens the selected session
+  directly, and it starts empty each time) · `f` search
   (transcript content) · `esc` clear · `r` refresh · `q` quit.
 
 ## Config files
