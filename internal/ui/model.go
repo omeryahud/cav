@@ -17,7 +17,6 @@ import (
 	"github.com/omeryahud/cav/internal/dirs"
 	"github.com/omeryahud/cav/internal/dismiss"
 	"github.com/omeryahud/cav/internal/names"
-	"github.com/omeryahud/cav/internal/order"
 	"github.com/omeryahud/cav/internal/preview"
 	"github.com/omeryahud/cav/internal/search"
 	"github.com/omeryahud/cav/internal/termview"
@@ -46,7 +45,7 @@ const previewRefresh = 2 * time.Second
 type grouping int
 
 const (
-	groupNone      grouping = iota // manual order (no grouping)
+	groupNone      grouping = iota // ungrouped: a flat alphabetical list
 	groupDirStatus                 // by cwd, then status (the default)
 	groupStatusDir                 // by status, then cwd
 )
@@ -102,11 +101,10 @@ type Model struct {
 	states       map[string]string // sessionId -> job lifecycle state (working/done/blocked)
 	names        *names.Store      // cav-local display-name overrides
 	dismissed    *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
-	groupMode    grouping          // none (manual) | dir→status | status→dir (o cycles)
+	groupMode    grouping          // none (alphabetical) | dir→status | status→dir (o cycles)
 	stoppedView  bool              // true: showing the stopped-sessions window (s toggles)
 	justStopped  map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
 	cursor       int
-	order        *order.Store
 	mode         mode
 	input        textinput.Model
 	filter       string          // active metadata filter
@@ -145,7 +143,6 @@ func New() (*Model, error) {
 	ti.CharLimit = 512
 	ti.Width = 60
 	return &Model{
-		order:       order.Load(),
 		names:       names.Load(),
 		dismissed:   dismiss.Load(),
 		input:       ti,
@@ -575,29 +572,6 @@ func subseq(s, q string) bool {
 	return i == len(q)
 }
 
-// applyOrder sorts sessions by the saved order; sessions not in the saved
-// order fall to the bottom, newest first.
-func applyOrder(ss []claude.Session, ids []string) []claude.Session {
-	pos := make(map[string]int, len(ids))
-	for i, id := range ids {
-		pos[id] = i
-	}
-	out := append([]claude.Session(nil), ss...)
-	sort.SliceStable(out, func(i, j int) bool {
-		pi, oki := pos[out[i].SessionID]
-		pj, okj := pos[out[j].SessionID]
-		switch {
-		case oki && okj:
-			return pi < pj
-		case oki != okj:
-			return oki
-		default:
-			return out[i].StartedAt > out[j].StartedAt
-		}
-	})
-	return out
-}
-
 // recompute rebuilds the visible view from the full list + active filters.
 func (m *Model) recompute() {
 	q := strings.ToLower(strings.TrimSpace(m.filter))
@@ -614,9 +588,9 @@ func (m *Model) recompute() {
 		}
 		v = append(v, s)
 	}
-	// The fuzzy filter only narrows the set; the dir/status grouping still orders
-	// it (matches stay in their groups), so a search doesn't collapse everything
-	// into one undifferentiated list.
+	// The fuzzy filter only narrows the set; the active sort below still orders it
+	// (grouped matches stay in their groups; ungrouped stays alphabetical), so a
+	// search keeps its structure instead of collapsing into one list.
 	switch m.groupMode {
 	case groupDirStatus:
 		sort.SliceStable(v, func(i, j int) bool {
@@ -640,8 +614,17 @@ func (m *Model) recompute() {
 			}
 			return a.StartedAt > b.StartedAt
 		})
+	case groupNone:
+		// Ungrouped: a flat, case-insensitive alphabetical list by the displayed
+		// label (dirname/name).
+		sort.SliceStable(v, func(i, j int) bool {
+			ni, nj := strings.ToLower(m.rowName(v[i])), strings.ToLower(m.rowName(v[j]))
+			if ni != nj {
+				return ni < nj
+			}
+			return v[i].SessionID < v[j].SessionID
+		})
 	}
-	// groupNone leaves v in the manual (applyOrder) order.
 	m.view = v
 	m.cursor = clamp(m.cursor, 0, lastIndex(len(v)))
 }
@@ -783,36 +766,4 @@ func (m *Model) sessionMatches(s claude.Session, q string) bool {
 		strings.Contains(meta, q) ||
 		subseq(name, q) ||
 		subseq(base, q)
-}
-
-// reorder moves the selected row by delta and persists the new order.
-// Disabled while a filter/search is active (view != full list).
-func (m *Model) reorder(delta int) {
-	if m.stoppedView {
-		m.status = "reordering is only available in the active window"
-		return
-	}
-	if m.groupMode != groupNone {
-		m.status = "press o for manual order, then reorder"
-		return
-	}
-	if m.filter != "" || m.matchIDs != nil {
-		m.status = "clear filter (esc) to reorder"
-		return
-	}
-	i := m.cursor
-	j := i + delta
-	if i < 0 || i >= len(m.all) || j < 0 || j >= len(m.all) {
-		return
-	}
-	m.all[i], m.all[j] = m.all[j], m.all[i]
-	m.cursor = j
-	ids := make([]string, len(m.all))
-	for k, s := range m.all {
-		ids[k] = s.SessionID
-	}
-	if err := m.order.Set(ids); err != nil {
-		m.err = err
-	}
-	m.recompute()
 }

@@ -173,7 +173,7 @@ func (m *Model) indicators() string {
 	}
 	switch m.groupMode {
 	case groupNone:
-		parts = append(parts, "manual-order")
+		parts = append(parts, "alphabetical")
 	case groupStatusDir:
 		parts = append(parts, "group:status→dir")
 	}
@@ -402,7 +402,7 @@ func (m *Model) helpBar() string {
 	binds := []struct{ k, d string }{
 		{"n", "new"}, {"N", "new project"}, {"R", "rename"},
 		{"d", "remove"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
-		{"J/K", "reorder"}, {"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
+		{"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
 	}
 	parts := make([]string, len(binds))

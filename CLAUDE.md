@@ -5,8 +5,8 @@ Guidance for Claude Code when working in this repository.
 ## What cav is
 
 `cav` (Claude Agents View) is a terminal UI — built with Bubble Tea / Lip Gloss —
-for managing Claude Code **background sessions**: list, create, delete, reorder,
-rename, search, preview, and open them. It's a richer, self-controlled
+for managing Claude Code **background sessions**: list, create, delete, rename,
+search, preview, and open them. It's a richer, self-controlled
 alternative to the built-in `claude agents` view (the gaps it fills: custom
 ordering, content search, a markdown preview pane, and resilience to the daemon
 dropping sessions after a laptop sleep).
@@ -49,7 +49,6 @@ after.
   - `update.go` — `Update` + per-mode key handlers.
   - `view.go` — layout + rendering, Lip Gloss styles, and `renderSnippets`
     (markdown → ANSI via glamour).
-- `internal/order/` — persists a custom session order (`~/.config/cav/order.json`).
 - `internal/names/` — cav-local rename overrides (`~/.config/cav/names.json`).
 - `internal/dismiss/` — cav-local set of sessions hidden with `d` (`~/.config/cav/dismissed.json`).
 - `internal/dirs/` — portable directory candidates for the "new session" picker.
@@ -130,11 +129,11 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 ## UI behavior
 
 - **Grouping** (`o` cycles three `groupMode`s): **dir→status** (default; by cwd,
-  then status) → **status→dir** (by status, then cwd) → **none** (manual order).
+  then status) → **status→dir** (by status, then cwd) → **none** (alphabetical).
   A directory header is the **name** (bold) with the **full path faint on its own
   line**; a status header is the color-coded bucket label. Whichever key is the
   *secondary* one is shown indented under the primary. The active non-default mode
-  shows in the header (`group:status→dir` / `manual-order`). Rows show
+  shows in the header (`group:status→dir` / `alphabetical`). Rows show
   **dirname/name · status · age** — the cwd's leaf dir is prefixed onto every
   session name (`rowName`, a display-only decoration computed from the cwd, so it
   applies to all sessions and isn't part of the editable rename) — no conversation
@@ -187,8 +186,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   names which action will run.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
-  `d` remove · `l` logs · `o` group (cycle dir→status / status→dir / off) ·
-  `s` stopped-window toggle · `J/K` reorder · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
+  `d` remove · `l` logs · `o` group (cycle dir→status / status→dir / alphabetical) ·
+  `s` stopped-window toggle · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
   scroll preview · `/` filter (metadata; **live fuzzy** — type to narrow
   (subsequence match; the dir/status grouping is kept), `↑/↓` (or `ctrl+j/k`)
   move the selection without leaving the prompt, `↵` opens the selected session
@@ -197,7 +196,6 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 
 ## Config files
 
-- `~/.config/cav/order.json` — custom session order (manual-order mode).
 - `~/.config/cav/names.json` — cav-local rename overrides (the `claude` CLI has
   no rename verb and the daemon name isn't writable, so renames are cav-only).
 - `~/.config/cav/dismissed.json` — cav-local set of session IDs hidden with `d`

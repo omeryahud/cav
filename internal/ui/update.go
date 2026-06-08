@@ -23,7 +23,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.ensurePreview()
 
 	case refreshResult:
-		m.all = applyOrder(m.filterDismissed(msg.sessions), m.order.IDs())
+		m.all = m.filterDismissed(msg.sessions)
 		m.roster = msg.roster
 		m.states = msg.states
 		// Drop optimistic stop-hides once confirmed (state is stopped) or the
@@ -147,10 +147,6 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 	case "G", "end":
 		m.cursor = lastIndex(len(m.view))
-	case "J":
-		m.reorder(1)
-	case "K":
-		m.reorder(-1)
 	case "p":
 		m.previewOn = !m.previewOn
 	case "ctrl+u":
