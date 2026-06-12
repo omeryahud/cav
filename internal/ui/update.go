@@ -23,9 +23,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.ensurePreview()
 
 	case refreshResult:
-		m.all = m.filterDismissed(msg.sessions)
+		m.all = msg.sessions
 		m.roster = msg.roster
 		m.states = msg.states
+		m.live = msg.live
 		// Drop optimistic stop-hides once confirmed (state is stopped) or the
 		// session is gone; statusOf then keeps genuinely-stopped ones hidden.
 		if len(m.justStopped) > 0 {
@@ -255,17 +256,24 @@ func (m *Model) openCurrent() tea.Cmd {
 	}
 	id, label := m.jobID(s), m.displayName(*s) // attach by job id, not session id
 	note := "← back from " + label
+	// A live worker attaches directly. A stopped or sleep-dropped session has no
+	// live worker — the daemon has released the job, so `claude attach` alone
+	// errors ("job not found" / "not known to the daemon"). Respawn it first
+	// (same job id, from the stored respawn flags), then attach — exactly what
+	// the native agents view does.
+	cmd := claude.AttachCmd(id)
+	if !m.live[s.SessionID] {
+		cmd = claude.ResumeAttachCmd(id)
+	}
 	if m.stoppedView {
-		// Resuming a stopped session is the same `claude attach` — the CLI
-		// respawns it from the stored respawn flags. Once alive it's an active
-		// session, so leave the stopped window now; the post-attach refresh
-		// reclassifies it out of the stopped bucket into the main one.
+		// Resuming leaves the stopped window; the post-attach refresh reclassifies
+		// the now-active session into the main one.
 		m.stoppedView = false
 		m.cursor = 0
 		m.recompute()
 		note = "↩ resumed " + label
 	}
-	return tea.ExecProcess(claude.AttachCmd(id), func(error) tea.Msg {
+	return tea.ExecProcess(cmd, func(error) tea.Msg {
 		return actionMsg{note: note}
 	})
 }
@@ -416,15 +424,15 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.recompute()
 			return m, stopCmd(m.jobID(s))
 		}
-		// No live worker: `claude stop` would be a no-op and the session would
-		// reappear on restart, so hide it cav-locally instead. It stays on disk
-		// and resumable via the claude CLI; cav just stops listing it.
+		// No live worker: `claude stop` would be a no-op (and the session would
+		// reappear in the main list on restart), so mark it cav-locally. That moves
+		// it to the stopped window (see isStopped) — out of the main list but still
+		// visible and resumable there — and the mark survives restart.
 		if err := m.dismissed.Add(s.SessionID); err != nil {
 			m.err = err
 			return m, nil
 		}
-		m.all = removeSession(m.all, s.SessionID)
-		m.status = "hidden " + m.displayName(*s) + " (undo: edit ~/.config/cav/dismissed.json)"
+		m.status = "moved " + m.displayName(*s) + " to the stopped window (press s)"
 		m.recompute()
 		return m, nil
 	default:

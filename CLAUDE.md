@@ -40,8 +40,9 @@ after.
 - `internal/claude/` — the only place that talks to the `claude` CLI and the
   on-disk daemon/job state.
   - `types.go` — `Session` (mirrors `claude agents --json`).
-  - `client.go` — `List`, `Stop`, `Create`, `AttachCmd`, `LogsShellCmd`, `Logs`,
-    `Roster`/`LoadRoster`/`JobID`, `JobState`, `JobRecord`/`ScanJobs`.
+  - `client.go` — `List`, `Stop`, `Create`, `AttachCmd`, `ResumeAttachCmd`,
+    `LogsShellCmd`, `Logs`, `Roster`/`LoadRoster`/`JobID`, `JobState`,
+    `JobRecord`/`ScanJobs`.
 - `internal/ui/` — the Bubble Tea app.
   - `model.go` — `Model`, messages, commands (incl. the `doRefresh` merge run by
     the background `refreshLoop`), the `statusOf`/`statusRank`/`bucketLabel`
@@ -90,8 +91,11 @@ a refresh completes (~0.5s, bounded by `claude agents --json`; a small `minRefre
 floor only guards against a hot spin if a refresh returns instantly). Results flow
 to the update loop via a channel (`waitRefresh`), which re-arms itself each time.
 The merge:
-1. List live sessions; build `sessionId → jobId` from `LoadRoster` (correct
-   post-branch). State for live sessions comes from `JobState(jobId)`.
+1. List live sessions; build `sessionId → jobId` from `LoadRoster` (authoritative,
+   correct post-branch) **plus** the on-disk job dirs (`ScanJobs`) as a fallback —
+   the daemon roster is often incomplete (it may list only a few of the live
+   workers), so without the fallback most live sessions would be unattachable
+   ("not registered with the daemon"). State comes from `JobState(jobId)`.
 2. Add on-disk `ScanJobs` records **not** already covered by a live session
    (dedup by sessionId *and* job id — a branched session shares its job with the
    live one) and updated within `recentDays` (7). This keeps stopped and
@@ -142,8 +146,9 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 - **Stopped window:** stopped sessions live in a **separate window**, not the main
   list. `s` switches between the main (active) window and the stopped window.
   Selecting a stopped session and pressing `↵`/`→` **resumes** it (see Open/resume)
-  and returns to the main window. Stopping a live session (see **Remove**) also
-  moves it here.
+  and returns to the main window. Both ways a session leaves the main list land it
+  here: stopping a live one (`claude stop`) and removing a finished/dropped one
+  with `d` (a cav-local mark — see **Remove**). `isStopped` decides membership.
 - **Preview pane** (right, 50% width, `p` toggles), reloaded on a ~2s throttle
   (`previewRefresh`) even though the list refreshes continuously, so `claude logs`
   isn't hammered; a selection change reloads it immediately:
@@ -167,23 +172,26 @@ Bucket sub-headers and dots are color-coded and kept in sync.
     scroll the pane. It's bottom-anchored with an upward offset (`previewScroll`);
     the header shows `↑`/`↑↓`/`↓` for which way more content exists, and the offset
     resets to the bottom whenever the selected session changes.
-- **Open / resume** (`↵` or `→`): hands the current terminal to
-  `claude attach <jobId>` via `tea.ExecProcess`; on exit, cav resumes in place. For
-  a **stopped** session this *is* the resume path — `claude attach` respawns it from
-  the `respawnFlags`/`resumeSessionId` the daemon stored in `state.json` (`claude
-  stop`'s own help: "resume it later with `claude attach <id>`"), and cav switches
-  back to the main window. You cannot attach to a session that's already attached
-  elsewhere (e.g. the one you're typing in).
-- **Remove** (`d`): branches on whether the session has a **live worker**. With one
-  (status from `agents --json`), runs `claude stop` — moving it to the stopped
-  window (optimistic hide, reconciled on refresh). With **no** live worker
-  (done/complete/error, or sleep-dropped), `claude stop` is a no-op, so cav
-  instead **hides it in a
-  cav-local dismissed set** (`~/.config/cav/dismissed.json`) and never lists it
-  again — dismissing needs only the session id, so it works without a job id.
-  Non-destructive: the session stays on disk / keeps running and is still
-  reachable via the `claude` CLI; undo by editing that file. The confirm prompt
-  names which action will run.
+- **Open / resume** (`↵` or `→`) branches on whether the session has a **live
+  worker** (the `live` set from `doRefresh`):
+  - **Live worker** → hands the current terminal to `claude attach <jobId>` via
+    `tea.ExecProcess`; on exit, cav resumes in place. You can't attach to a session
+    already attached elsewhere (e.g. the one you're typing in).
+  - **No live worker** (stopped / done / sleep-dropped — the daemon has released
+    the job, so bare `claude attach` errors with "No job matching") → opened with
+    `ResumeAttachCmd`: `claude respawn <jobId> && claude attach <jobId>`. `respawn`
+    restarts the session **in place** (same job id, from the stored
+    respawnFlags/resumeSessionId), after which attach succeeds — the same revive
+    the native agent view does. From the stopped window, resuming returns to main.
+- **Remove** (`d`): both branches move the session to the **stopped window**, out
+  of the main list. With a **live worker** (status from `agents --json`), runs
+  `claude stop` (optimistic, reconciled on refresh). With **no** live worker
+  (done/complete/error, or sleep-dropped), `claude stop` is a no-op, so cav instead
+  **marks it in a cav-local set** (`~/.config/cav/dismissed.json`); `isStopped` then
+  keeps it in the stopped window (out of the main list) — visible and resumable
+  there, surviving restart — needing only the session id, so it works without a job
+  id. Non-destructive: the session stays on disk; undo by editing that file. The
+  confirm prompt names which action will run.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
   `d` remove · `l` logs · `o` group (cycle dir→status / status→dir / alphabetical) ·
@@ -192,16 +200,18 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   (subsequence match; the dir/status grouping is kept), `↑/↓` (or `ctrl+j/k`)
   move the selection without leaving the prompt, `↵` opens the selected session
   directly while `tab` just confirms the filter and stays in the list (shift+enter
-  isn't detectable in bubbletea v1), and it starts empty each time) · `f` search
+  isn't detectable in bubbletea v1), and it starts empty each time — or run
+  `cav <term>` on the CLI to open with the filter already applied) · `f` search
   (transcript content) · `esc` clear · `r` refresh · `q` quit.
 
 ## Config files
 
 - `~/.config/cav/names.json` — cav-local rename overrides (the `claude` CLI has
   no rename verb and the daemon name isn't writable, so renames are cav-only).
-- `~/.config/cav/dismissed.json` — cav-local set of session IDs hidden with `d`
-  (those with no live worker). Non-destructive: the sessions stay on disk and are
-  still resumable via the `claude` CLI; cav just never lists them.
+- `~/.config/cav/dismissed.json` — cav-local set of session IDs removed with `d`
+  (those with no live worker). Non-destructive: they stay on disk and move to the
+  **stopped window** (out of the main list) — still visible and resumable there;
+  undo by editing this file.
 - `~/.config/cav/roots.txt` — optional roots for the new-session dir picker
   (one path per line, `#` comments, `~` expansion). If absent, common dev dirs
   are auto-detected (`~/go/src`, `~/src`, `~/dev`, `~/projects`, ...).

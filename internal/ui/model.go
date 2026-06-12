@@ -70,6 +70,7 @@ type (
 		sessions []claude.Session
 		roster   claude.Roster
 		states   map[string]string
+		live     map[string]bool // sessionIds with a live daemon worker (vs on-disk only)
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
@@ -99,6 +100,7 @@ type Model struct {
 	view         []claude.Session  // filtered/searched subset shown
 	roster       claude.Roster     // sessionId -> job id (attachable iff present)
 	states       map[string]string // sessionId -> job lifecycle state (working/done/blocked)
+	live         map[string]bool   // sessionId -> has a live daemon worker (else respawn to attach)
 	names        *names.Store      // cav-local display-name overrides
 	dismissed    *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
 	groupMode    grouping          // none (alphabetical) | dir→status | status→dir (o cycles)
@@ -136,13 +138,15 @@ type Model struct {
 	height int
 }
 
-// New constructs the initial model.
-func New() (*Model, error) {
+// New constructs the initial model. initialFilter (the cav CLI argument)
+// pre-applies the / metadata filter, so `cav <term>` opens filtered to <term>.
+func New(initialFilter string) (*Model, error) {
 	ti := textinput.New()
 	ti.Prompt = ""
 	ti.CharLimit = 512
 	ti.Width = 60
 	return &Model{
+		filter:      initialFilter,
 		names:       names.Load(),
 		dismissed:   dismiss.Load(),
 		input:       ti,
@@ -170,11 +174,23 @@ func doRefresh() refreshResult {
 	defer cancel()
 	live, _ := claude.List(ctx) // ignore errors: still show durable on-disk jobs
 	daemon := claude.LoadRoster()
+	jobRecs := claude.ScanJobs()
+	// sessionId -> jobId from on-disk job dirs. The daemon roster is authoritative
+	// (it has the CURRENT id after a /branch) but is often incomplete — it lists
+	// only some live workers — so this fills the gaps, keeping every session with a
+	// job dir attachable instead of "not registered with the daemon".
+	jobByS := map[string]string{}
+	for _, j := range jobRecs {
+		if _, ok := jobByS[j.SessionID]; !ok {
+			jobByS[j.SessionID] = j.JobID
+		}
+	}
 
 	roster := claude.Roster{}
 	states := map[string]string{}
 	seen := map[string]bool{}
 	liveJobs := map[string]bool{}
+	liveSet := map[string]bool{} // sessionIds with a live daemon worker
 	var sessions []claude.Session
 
 	// 1) Live sessions — resolve job ids from the daemon roster, which holds the
@@ -188,7 +204,12 @@ func doRefresh() refreshResult {
 		}
 		sessions = append(sessions, s)
 		seen[s.SessionID] = true
-		if jid := daemon[s.SessionID]; jid != "" {
+		liveSet[s.SessionID] = true
+		jid := daemon[s.SessionID]
+		if jid == "" {
+			jid = jobByS[s.SessionID] // roster gap → fall back to the on-disk job dir
+		}
+		if jid != "" {
 			roster[s.SessionID] = jid
 			states[s.SessionID] = claude.JobState(jid)
 			liveJobs[jid] = true
@@ -199,7 +220,7 @@ func doRefresh() refreshResult {
 	//    after a laptop sleep). Dedup by sessionId and by job id — a branched
 	//    session shares its job with a live one, so skip that stale record.
 	cutoff := time.Now().Add(-recentDays * 24 * time.Hour)
-	for _, j := range claude.ScanJobs() {
+	for _, j := range jobRecs {
 		if seen[j.SessionID] || liveJobs[j.JobID] {
 			continue
 		}
@@ -218,7 +239,7 @@ func doRefresh() refreshResult {
 		seen[j.SessionID] = true
 	}
 
-	return refreshResult{sessions: sessions, roster: roster, states: states}
+	return refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet}
 }
 
 // refreshLoop runs the session refresh continuously in the background — no fixed
@@ -656,11 +677,15 @@ func (m *Model) statusOf(s claude.Session) string {
 	return "" // interactive / unknown
 }
 
-// isStopped reports whether s belongs in the stopped-sessions window: either its
-// job state is "stopped", or it was just stopped from the main window and is
-// awaiting reconciliation (its state.json hasn't caught up yet).
+// isStopped reports whether s belongs in the stopped-sessions window: its job
+// state is "stopped", it was just stopped from the main window and is awaiting
+// reconciliation (state.json hasn't caught up), or it was removed with d (a
+// cav-local dismiss) while having no live worker. So d-removed sessions move to
+// the stopped window instead of vanishing — visible and resumable there — and a
+// resumed one (live again) leaves it for the main window.
 func (m *Model) isStopped(s claude.Session) bool {
-	return m.statusOf(s) == "stopped" || m.justStopped[s.SessionID]
+	return m.statusOf(s) == "stopped" || m.justStopped[s.SessionID] ||
+		(m.dismissed.Has(s.SessionID) && !hasLiveWorker(s))
 }
 
 // countStopped returns how many sessions currently live in the stopped window.
@@ -674,37 +699,11 @@ func (m *Model) countStopped() int {
 	return n
 }
 
-// filterDismissed drops sessions the user has hidden with d. Dismissed sessions
-// stay on disk (still resumable via the claude CLI); cav just never lists them.
-func (m *Model) filterDismissed(ss []claude.Session) []claude.Session {
-	if m.dismissed.Len() == 0 {
-		return ss
-	}
-	out := make([]claude.Session, 0, len(ss))
-	for _, s := range ss {
-		if !m.dismissed.Has(s.SessionID) {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 // hasLiveWorker reports whether s is a running daemon worker that `claude stop`
 // can actually act on. `agents --json` reports a status for live background
 // workers; on-disk-only records (finished, stopped, or sleep-dropped) carry no
 // status, so d hides them cav-locally instead of issuing a no-op stop.
 func hasLiveWorker(s claude.Session) bool { return s.Status != "" }
-
-// removeSession returns ss without the session whose id matches.
-func removeSession(ss []claude.Session, id string) []claude.Session {
-	out := ss[:0]
-	for _, s := range ss {
-		if s.SessionID != id {
-			out = append(out, s)
-		}
-	}
-	return out
-}
 
 // statusRank orders the status buckets. Input is a normalized status from statusOf.
 func statusRank(status string) int {

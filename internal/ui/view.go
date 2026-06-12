@@ -281,9 +281,10 @@ func statusHeaderLine(rank, width, indent int) string {
 
 func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 	st := m.statusOf(s)
-	// Widen the name column to use the freed space (the message snippet is gone),
-	// but cap it and never crowd the status/age columns on narrow layouts.
-	nameW := clamp(width-18, 18, 36)
+	// Give the name column most of the freed space (no message snippet) up to a
+	// generous cap — names carry the dirname/ prefix now, so they run long — while
+	// the clamp keeps it from crowding the status/age columns on narrow layouts.
+	nameW := clamp(width-18, 18, 50)
 	body := fmt.Sprintf("%-*s %-8s %4s",
 		nameW, truncate(m.rowName(s), nameW), statusLabelFor(st), humanAge(s.Started()))
 	avail := width - 4 // marker(2) + dot(1) + space(1)
@@ -377,7 +378,7 @@ func (m *Model) footerBlock() string {
 	case m.mode == modeConfirm && m.pending != nil:
 		prompt := fmt.Sprintf("Stop %q? (y/n — y confirms)", m.displayName(*m.pending))
 		if !hasLiveWorker(*m.pending) {
-			prompt = fmt.Sprintf("Hide %q from cav? (y/n — survives restart; still resumable via claude)", m.displayName(*m.pending))
+			prompt = fmt.Sprintf("Remove %q to the stopped window? (y/n — survives restart; resume it there)", m.displayName(*m.pending))
 		}
 		status = warnDot.Render(prompt)
 	case m.mode == modePickDir:

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -12,7 +13,9 @@ import (
 )
 
 func main() {
-	m, err := ui.New()
+	// `cav <term>` opens with the session list pre-filtered to <term>.
+	term := strings.TrimSpace(strings.Join(os.Args[1:], " "))
+	m, err := ui.New(term)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cav:", err)
 		os.Exit(1)

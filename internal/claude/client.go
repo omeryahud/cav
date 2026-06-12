@@ -205,6 +205,15 @@ func LogsShellCmd(id string) *exec.Cmd {
 	return exec.Command("sh", "-c", fmt.Sprintf("%s logs %s | less -R +G", Bin(), id))
 }
 
+// ResumeAttachCmd respawns a stopped/dropped background session, then attaches —
+// the path the native agents view uses. `claude attach` alone fails once the
+// daemon has released the worker ("job not found"); `claude respawn` restarts it
+// (same job id) from the stored respawnFlags/resumeSessionId, after which attach
+// succeeds.
+func ResumeAttachCmd(jobID string) *exec.Cmd {
+	return exec.Command("sh", "-c", fmt.Sprintf("%s respawn %s && %s attach %s", Bin(), jobID, Bin(), jobID))
+}
+
 // Logs returns a live session's recent terminal output as raw bytes (with the
 // ANSI/cursor-control sequences intact, for a terminal emulator to reconstruct
 // the screen). Only works for a session with a live daemon worker; a
