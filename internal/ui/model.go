@@ -118,6 +118,7 @@ type Model struct {
 	groupMode    grouping          // none (alphabetical) | dir→status | status→dir (o cycles)
 	stoppedView  bool              // true: showing the stopped-sessions window (s toggles)
 	justStopped  map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
+	lastName     map[string]string // sessionId -> last non-empty name seen (survives a transient drop)
 	cursor       int
 	mode         mode
 	input        textinput.Model
@@ -171,6 +172,7 @@ func New(initialFilter string) (*Model, error) {
 		prevReq:     map[string]bool{},
 		states:      map[string]string{},
 		justStopped: map[string]bool{},
+		lastName:    map[string]string{},
 	}, nil
 }
 
@@ -445,12 +447,21 @@ func notAttachableReason(s claude.Session) string {
 	return "not registered with the daemon"
 }
 
-// displayName returns the cav-local rename override if set, else the daemon name.
+// displayName returns the best name for the session: a cav-local rename override,
+// else the current daemon/on-disk name, else the last name cav saw for it (so a
+// transient drop from `agents --json` / state.json doesn't blank it to the short
+// id — see lastName), else the short id.
 func (m *Model) displayName(s claude.Session) string {
 	if n := m.names.Get(s.SessionID); n != "" {
 		return n
 	}
-	return s.Display()
+	if s.Name != "" {
+		return s.Name
+	}
+	if n := m.lastName[s.SessionID]; n != "" {
+		return n
+	}
+	return s.Short()
 }
 
 // dirBase is the leaf directory name of a cwd (".../agent-sandbox" →

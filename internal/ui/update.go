@@ -27,6 +27,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.roster = msg.roster
 		m.states = msg.states
 		m.live = msg.live
+		// Remember each session's name so a later refresh that momentarily lacks it
+		// (the daemon drops it from agents --json, and state.json often has none)
+		// doesn't blank the row to the short id. Record real names only; never clear.
+		for i := range m.all {
+			if n := m.all[i].Name; n != "" && n != m.all[i].Short() {
+				m.lastName[m.all[i].SessionID] = n
+			}
+		}
 		// Drop optimistic stop-hides once confirmed (state is stopped) or the
 		// session is gone; statusOf then keeps genuinely-stopped ones hidden.
 		if len(m.justStopped) > 0 {
@@ -476,8 +484,10 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// written to the job's state.json, so without this the stopped-window entry
 		// would revert to the short id. Only when there's no rename override yet and
 		// the name is a real one (not just the short id).
-		if m.names.Get(s.SessionID) == "" && s.Name != "" && s.Name != s.Short() {
-			_ = m.names.Set(s.SessionID, s.Name)
+		if m.names.Get(s.SessionID) == "" {
+			if n := m.displayName(*s); n != s.Short() { // current or last-seen name
+				_ = m.names.Set(s.SessionID, n)
+			}
 		}
 		if hasLiveWorker(*s) {
 			m.justStopped[s.SessionID] = true // hide now; refresh reconciles once state.json updates

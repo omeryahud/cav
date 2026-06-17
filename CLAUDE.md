@@ -144,7 +144,10 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   session name (`rowName`, a display-only decoration computed from the cwd, so it
   applies to all sessions and isn't part of the editable rename) — no conversation
   snippet (that lives in the preview pane); cav doesn't read transcripts
-  per-refresh for the list.
+  per-refresh for the list. The name itself (`displayName`) is the rename override,
+  else the current daemon/on-disk name, else the **last name cav saw** for that
+  session (an in-memory `lastName` cache, so a transient drop from `agents --json`
+  / state.json doesn't blank the row to the short id), else the short id.
 - **Stopped window:** stopped sessions live in a **separate window**, not the main
   list. `s` switches between the main (active) window and the stopped window.
   Selecting a stopped session and pressing `↵`/`→` **resumes** it (see Open/resume)
