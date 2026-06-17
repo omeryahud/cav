@@ -27,13 +27,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.roster = msg.roster
 		m.states = msg.states
 		m.live = msg.live
-		// Remember each session's name so a later refresh that momentarily lacks it
-		// (the daemon drops it from agents --json, and state.json often has none)
-		// doesn't blank the row to the short id. Record real names only; never clear.
+		// Remember each session's name (persisted) so a later refresh that
+		// momentarily lacks it (the daemon drops it from agents --json, state.json
+		// often has none) — or a fresh startup — doesn't blank the row to the short
+		// id. Record real names only; never clear. seen.Set is a no-op when
+		// unchanged, and Save writes at most once per refresh, only on a change.
 		for i := range m.all {
 			if n := m.all[i].Name; n != "" && n != m.all[i].Short() {
-				m.lastName[m.all[i].SessionID] = n
+				m.seen.Set(m.all[i].SessionID, n)
 			}
+		}
+		if err := m.seen.Save(); err != nil {
+			m.err = err
 		}
 		// Drop optimistic stop-hides once confirmed (state is stopped) or the
 		// session is gone; statusOf then keeps genuinely-stopped ones hidden.

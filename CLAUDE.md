@@ -54,6 +54,7 @@ after.
 - `internal/dismiss/` — cav-local set of sessions hidden with `d` (`~/.config/cav/dismissed.json`).
 - `internal/forks/` — cav-local fork tree: forked child's jobId → parent sessionId (`~/.config/cav/forks.json`).
 - `internal/unpark/` — cav-local set of stopped sessions brought back to the main pane with `b` (`~/.config/cav/unparked.json`).
+- `internal/seen/` — persisted cache of the last name seen per session, so names survive restart + transient daemon drops (`~/.config/cav/seen.json`).
 - `internal/dirs/` — portable directory candidates for the "new session" picker.
 - `internal/preview/` — transcript snippet extraction for the markdown preview
   (non-live sessions).
@@ -146,8 +147,9 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   snippet (that lives in the preview pane); cav doesn't read transcripts
   per-refresh for the list. The name itself (`displayName`) is the rename override,
   else the current daemon/on-disk name, else the **last name cav saw** for that
-  session (an in-memory `lastName` cache, so a transient drop from `agents --json`
-  / state.json doesn't blank the row to the short id), else the short id.
+  session (the persisted `seen` cache — `~/.config/cav/seen.json`, loaded on
+  startup — so a transient drop from `agents --json` / state.json, or a fresh
+  launch, doesn't blank the row to the short id), else the short id.
 - **Stopped window:** stopped sessions live in a **separate window**, not the main
   list. `s` switches between the main (active) window and the stopped window.
   Selecting a stopped session and pressing `↵`/`→` **resumes** it (see Open/resume)
@@ -235,6 +237,9 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   sessionId) so children nest under their parent in the list; undo by editing it.
 - `~/.config/cav/unparked.json` — cav-local set of stopped session IDs brought back
   to the main pane with `b` (overrides the stopped-window classification).
+- `~/.config/cav/seen.json` — auto-populated cache of the last name seen per
+  session (loaded on startup), so names don't blank to the short id on a transient
+  daemon drop or a fresh launch. Distinct from names.json (user renames).
 - `~/.config/cav/roots.txt` — optional roots for the new-session dir picker
   (one path per line, `#` comments, `~` expansion). If absent, common dev dirs
   are auto-detected (`~/go/src`, `~/src`, `~/dev`, `~/projects`, ...).

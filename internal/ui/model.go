@@ -20,6 +20,7 @@ import (
 	"github.com/omeryahud/cav/internal/names"
 	"github.com/omeryahud/cav/internal/preview"
 	"github.com/omeryahud/cav/internal/search"
+	"github.com/omeryahud/cav/internal/seen"
 	"github.com/omeryahud/cav/internal/termview"
 	"github.com/omeryahud/cav/internal/unpark"
 )
@@ -118,7 +119,7 @@ type Model struct {
 	groupMode    grouping          // none (alphabetical) | dir→status | status→dir (o cycles)
 	stoppedView  bool              // true: showing the stopped-sessions window (s toggles)
 	justStopped  map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
-	lastName     map[string]string // sessionId -> last non-empty name seen (survives a transient drop)
+	seen         *seen.Store       // persisted cache: sessionId -> last name seen (survives restart + transient drops)
 	cursor       int
 	mode         mode
 	input        textinput.Model
@@ -172,7 +173,7 @@ func New(initialFilter string) (*Model, error) {
 		prevReq:     map[string]bool{},
 		states:      map[string]string{},
 		justStopped: map[string]bool{},
-		lastName:    map[string]string{},
+		seen:        seen.Load(),
 	}, nil
 }
 
@@ -449,8 +450,8 @@ func notAttachableReason(s claude.Session) string {
 
 // displayName returns the best name for the session: a cav-local rename override,
 // else the current daemon/on-disk name, else the last name cav saw for it (so a
-// transient drop from `agents --json` / state.json doesn't blank it to the short
-// id — see lastName), else the short id.
+// transient drop from `agents --json` / state.json, or a fresh startup, doesn't
+// blank it to the short id — see the persisted seen cache), else the short id.
 func (m *Model) displayName(s claude.Session) string {
 	if n := m.names.Get(s.SessionID); n != "" {
 		return n
@@ -458,7 +459,7 @@ func (m *Model) displayName(s claude.Session) string {
 	if s.Name != "" {
 		return s.Name
 	}
-	if n := m.lastName[s.SessionID]; n != "" {
+	if n := m.seen.Get(s.SessionID); n != "" {
 		return n
 	}
 	return s.Short()
