@@ -225,6 +225,14 @@ func (m *Model) groupedVisual(width int) ([]string, int) {
 	lastCWD, lastRank := "\x00", -1
 	for i := range m.view {
 		s := m.view[i]
+		if m.depth[s.SessionID] > 0 {
+			// Forked child: nests under its parent — no dir/status header of its own.
+			if i == m.cursor {
+				sel = len(lines)
+			}
+			lines = append(lines, m.rowLine(s, i == m.cursor, m.roster[s.SessionID] != "", width))
+			continue
+		}
 		rank := statusRank(m.statusOf(s))
 		if byDir {
 			if s.CWD != lastCWD {
@@ -285,8 +293,14 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 	// generous cap — names carry the dirname/ prefix now, so they run long — while
 	// the clamp keeps it from crowding the status/age columns on narrow layouts.
 	nameW := clamp(width-18, 18, 50)
+	name := m.rowName(s)
+	if d := m.depth[s.SessionID]; d > 0 {
+		// Forked child: indent under its parent with a tree branch; drop the
+		// dirname/ prefix (the parent row already shows the dir).
+		name = strings.Repeat("  ", d-1) + "└─ " + m.displayName(s)
+	}
 	body := fmt.Sprintf("%-*s %-8s %4s",
-		nameW, truncate(m.rowName(s), nameW), statusLabelFor(st), humanAge(s.Started()))
+		nameW, truncate(name, nameW), statusLabelFor(st), humanAge(s.Started()))
 	avail := width - 4 // marker(2) + dot(1) + space(1)
 	if avail < 1 {
 		avail = 1
@@ -401,7 +415,7 @@ func (m *Model) helpBar() string {
 		stopped = "back"
 	}
 	binds := []struct{ k, d string }{
-		{"n", "new"}, {"N", "new project"}, {"R", "rename"},
+		{"n", "new"}, {"N", "new project"}, {"R", "rename"}, {"F", "fork"},
 		{"d", "remove"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},

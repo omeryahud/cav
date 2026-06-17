@@ -16,6 +16,7 @@ import (
 	"github.com/omeryahud/cav/internal/claude"
 	"github.com/omeryahud/cav/internal/dirs"
 	"github.com/omeryahud/cav/internal/dismiss"
+	"github.com/omeryahud/cav/internal/forks"
 	"github.com/omeryahud/cav/internal/names"
 	"github.com/omeryahud/cav/internal/preview"
 	"github.com/omeryahud/cav/internal/search"
@@ -92,6 +93,13 @@ type (
 		jobID string
 		label string
 	}
+	// forkedMsg follows F (fork): record childJobID -> parentSID in the fork store
+	// and highlight the new child once it appears.
+	forkedMsg struct {
+		childJobID string
+		parentSID  string
+		label      string
+	}
 )
 
 // Model is the cav application state.
@@ -103,6 +111,8 @@ type Model struct {
 	live         map[string]bool   // sessionId -> has a live daemon worker (else respawn to attach)
 	names        *names.Store      // cav-local display-name overrides
 	dismissed    *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
+	forks        *forks.Store      // cav-local child-jobId -> parent-sessionId (fork tree)
+	depth        map[string]int    // sessionId -> fork-tree depth (0 = top-level), set by recompute
 	groupMode    grouping          // none (alphabetical) | dir→status | status→dir (o cycles)
 	stoppedView  bool              // true: showing the stopped-sessions window (s toggles)
 	justStopped  map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
@@ -149,6 +159,7 @@ func New(initialFilter string) (*Model, error) {
 		filter:      initialFilter,
 		names:       names.Load(),
 		dismissed:   dismiss.Load(),
+		forks:       forks.Load(),
 		input:       ti,
 		mode:        modeList,
 		groupMode:   groupDirStatus,
@@ -287,6 +298,21 @@ func createCmd(cwd, name, prompt string) tea.Cmd {
 			label = filepath.Base(cwd)
 		}
 		return createdMsg{jobID: jobID, label: label}
+	}
+}
+
+// forkCmd forks parentSID — continuing its conversation in a new child bg session
+// (see claude.Fork) — and reports the child's job id so the UI can record the
+// link and highlight the child.
+func forkCmd(parentSID, parentJobID, cwd, label string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		childJob, err := claude.Fork(ctx, parentSID, parentJobID, cwd)
+		if err != nil {
+			return actionMsg{err: err}
+		}
+		return forkedMsg{childJobID: childJob, parentSID: parentSID, label: label}
 	}
 }
 
@@ -646,8 +672,66 @@ func (m *Model) recompute() {
 			return v[i].SessionID < v[j].SessionID
 		})
 	}
+	// Nest forked children directly under their parent (a tree), overriding the
+	// flat sort for the children; top-level sessions keep their sorted order.
+	v, m.depth = m.applyForkTree(v)
 	m.view = v
 	m.cursor = clamp(m.cursor, 0, lastIndex(len(v)))
+}
+
+// applyForkTree reorders v so each forked child follows its parent, recording a
+// depth per session (0 = top-level, 1 = child, …) for indented rendering.
+// Children ride with their parent regardless of the sort; a child whose parent
+// isn't in v stays top-level.
+func (m *Model) applyForkTree(v []claude.Session) ([]claude.Session, map[string]int) {
+	if m.forks == nil || len(v) == 0 {
+		return v, nil
+	}
+	inView := make(map[string]bool, len(v))
+	for i := range v {
+		inView[v[i].SessionID] = true
+	}
+	bySID := make(map[string]claude.Session, len(v))
+	parentOf := make(map[string]string, len(v))
+	childrenOf := map[string][]string{}
+	for _, s := range v {
+		bySID[s.SessionID] = s
+		if p := m.forks.Parent(m.roster[s.SessionID]); p != "" && p != s.SessionID && inView[p] {
+			parentOf[s.SessionID] = p
+			childrenOf[p] = append(childrenOf[p], s.SessionID)
+		}
+	}
+	if len(parentOf) == 0 {
+		return v, nil // no fork relationships visible — leave the sort as-is
+	}
+	depth := make(map[string]int, len(v))
+	ordered := make([]claude.Session, 0, len(v))
+	seen := make(map[string]bool, len(v))
+	var emit func(sid string, d int)
+	emit = func(sid string, d int) {
+		if seen[sid] {
+			return // guard against a cycle
+		}
+		seen[sid] = true
+		depth[sid] = d
+		ordered = append(ordered, bySID[sid])
+		for _, c := range childrenOf[sid] {
+			emit(c, d+1)
+		}
+	}
+	for _, s := range v {
+		if parentOf[s.SessionID] == "" {
+			emit(s.SessionID, 0)
+		}
+	}
+	for _, s := range v { // any leftover (e.g. cyclic chain) → top-level
+		if !seen[s.SessionID] {
+			depth[s.SessionID] = 0
+			ordered = append(ordered, s)
+			seen[s.SessionID] = true
+		}
+	}
+	return ordered, depth
 }
 
 // statusOf computes a normalized session status by combining the live

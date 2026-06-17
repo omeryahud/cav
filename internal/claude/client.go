@@ -214,6 +214,46 @@ func ResumeAttachCmd(jobID string) *exec.Cmd {
 	return exec.Command("sh", "-c", fmt.Sprintf("%s respawn %s && %s attach %s", Bin(), jobID, Bin(), jobID))
 }
 
+// Fork starts a new background session that continues parentSessionID's
+// conversation under a fresh session id (`--bg --resume <id> --fork-session`),
+// reusing the parent job's cwd and respawn flags (read from its state.json, with
+// the parent's --name dropped so the fork isn't named identically). Returns the
+// new child's job id. The daemon records no parent link, so the caller tracks it.
+func Fork(ctx context.Context, parentSessionID, parentJobID, cwd string) (string, error) {
+	if parentSessionID == "" {
+		return "", fmt.Errorf("fork: no parent session id")
+	}
+	var flags []string // reuse the parent's respawn flags (model etc.), minus --name
+	if parentJobID != "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			if b, err := os.ReadFile(filepath.Join(h, ".claude", "jobs", parentJobID, "state.json")); err == nil {
+				var st struct {
+					RespawnFlags []string `json:"respawnFlags"`
+				}
+				if json.Unmarshal(b, &st) == nil {
+					for i := 0; i < len(st.RespawnFlags); i++ {
+						if st.RespawnFlags[i] == "--name" {
+							i++ // skip its value; the fork shouldn't inherit the parent's name
+							continue
+						}
+						flags = append(flags, st.RespawnFlags[i])
+					}
+				}
+			}
+		}
+	}
+	args := append([]string{"--bg", "--resume", parentSessionID, "--fork-session"}, flags...)
+	cmd := exec.CommandContext(ctx, Bin(), args...)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("claude --bg --resume --fork-session: %w: %s", err, out)
+	}
+	return parseJobID(string(out)), nil
+}
+
 // Logs returns a live session's recent terminal output as raw bytes (with the
 // ANSI/cursor-control sequences intact, for a terminal emulator to reconstruct
 // the screen). Only works for a session with a live daemon worker; a

@@ -52,6 +52,7 @@ after.
     (markdown → ANSI via glamour).
 - `internal/names/` — cav-local rename overrides (`~/.config/cav/names.json`).
 - `internal/dismiss/` — cav-local set of sessions hidden with `d` (`~/.config/cav/dismissed.json`).
+- `internal/forks/` — cav-local fork tree: forked child's jobId → parent sessionId (`~/.config/cav/forks.json`).
 - `internal/dirs/` — portable directory candidates for the "new session" picker.
 - `internal/preview/` — transcript snippet extraction for the markdown preview
   (non-live sessions).
@@ -192,9 +193,18 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   there, surviving restart — needing only the session id, so it works without a job
   id. Non-destructive: the session stays on disk; undo by editing that file. The
   confirm prompt names which action will run.
+- **Fork** (`F`): forks the highlighted session into a new child background session
+  that continues its conversation — `claude --bg --resume <sid> --fork-session`,
+  in the parent's cwd, reusing its respawn flags (minus `--name`). The child→parent
+  link is recorded cav-locally (`internal/forks`), so `recompute`/`applyForkTree`
+  nests the child **directly under its parent**, indented with a `└─` tree branch
+  (per-row `depth`); nested children ride with their parent and get no dir/status
+  header of their own. The child is highlighted once it registers (like a create),
+  and inherits the parent's name (via `--resume`) — `R`-rename to distinguish.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
-  `d` remove · `l` logs · `o` group (cycle dir→status / status→dir / alphabetical) ·
+  `F` fork (nests the child under the parent) · `d` remove · `l` logs ·
+  `o` group (cycle dir→status / status→dir / alphabetical) ·
   `s` stopped-window toggle · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
   scroll preview · `/` filter (metadata; **live fuzzy** — type to narrow
   (subsequence match; the dir/status grouping is kept), `↑/↓` (or `ctrl+j/k`)
@@ -212,6 +222,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   (those with no live worker). Non-destructive: they stay on disk and move to the
   **stopped window** (out of the main list) — still visible and resumable there;
   undo by editing this file.
+- `~/.config/cav/forks.json` — cav-local fork tree (forked child's jobId → parent
+  sessionId) so children nest under their parent in the list; undo by editing it.
 - `~/.config/cav/roots.txt` — optional roots for the new-session dir picker
   (one path per line, `#` comments, `~` expansion). If absent, common dev dirs
   are auto-detected (`~/go/src`, `~/src`, `~/dev`, `~/projects`, ...).

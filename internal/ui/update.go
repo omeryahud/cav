@@ -101,6 +101,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectJobID = msg.jobID // "" if the id couldn't be parsed → just won't auto-select
 		return m, nil             // the background loop will see it and highlight it
 
+	case forkedMsg:
+		// Fork (F) created a child continuing parentSID's conversation under a new
+		// session id. Record child→parent so it nests under the parent, and
+		// highlight the child once it appears (like a create).
+		if err := m.forks.Set(msg.childJobID, msg.parentSID); err != nil {
+			m.err = err
+		}
+		m.status = "forked " + msg.label
+		m.selectJobID = msg.childJobID
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -188,6 +199,13 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Placeholder = "new name (empty clears override)…"
 			m.input.CursorEnd()
 			return m, m.input.Focus()
+		}
+	case "F":
+		// Fork the highlighted session: a new child bg session continuing its
+		// conversation, nested under it in the list.
+		if s := m.current(); s != nil {
+			m.status = "forking " + m.displayName(*s) + "…"
+			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s))
 		}
 	case "n":
 		m.mode = modePickDir
