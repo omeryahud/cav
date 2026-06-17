@@ -471,6 +471,14 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.recompute()
 			return m, nil
 		}
+		// Persist the display name cav-locally so it survives the session going
+		// on-disk: a live session's daemon name (from `agents --json`) often isn't
+		// written to the job's state.json, so without this the stopped-window entry
+		// would revert to the short id. Only when there's no rename override yet and
+		// the name is a real one (not just the short id).
+		if m.names.Get(s.SessionID) == "" && s.Name != "" && s.Name != s.Short() {
+			_ = m.names.Set(s.SessionID, s.Name)
+		}
 		if hasLiveWorker(*s) {
 			m.justStopped[s.SessionID] = true // hide now; refresh reconciles once state.json updates
 			m.status = "stopping " + m.displayName(*s) + "…"
