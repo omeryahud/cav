@@ -391,7 +391,10 @@ func (m *Model) footerBlock() string {
 	switch {
 	case m.mode == modeConfirm && m.pending != nil:
 		prompt := fmt.Sprintf("Stop %q? (y/n — y confirms)", m.displayName(*m.pending))
-		if !hasLiveWorker(*m.pending) {
+		switch {
+		case m.unparked.Has(m.pending.SessionID):
+			prompt = fmt.Sprintf("Move %q back to the stopped window? (y/n)", m.displayName(*m.pending))
+		case !hasLiveWorker(*m.pending):
 			prompt = fmt.Sprintf("Remove %q to the stopped window? (y/n — survives restart; resume it there)", m.displayName(*m.pending))
 		}
 		status = warnDot.Render(prompt)
@@ -416,7 +419,7 @@ func (m *Model) helpBar() string {
 	}
 	binds := []struct{ k, d string }{
 		{"n", "new"}, {"N", "new project"}, {"R", "rename"}, {"F", "fork"},
-		{"d", "remove"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
+		{"d", "remove"}, {"b", "bring back"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
 	}

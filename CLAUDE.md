@@ -53,6 +53,7 @@ after.
 - `internal/names/` — cav-local rename overrides (`~/.config/cav/names.json`).
 - `internal/dismiss/` — cav-local set of sessions hidden with `d` (`~/.config/cav/dismissed.json`).
 - `internal/forks/` — cav-local fork tree: forked child's jobId → parent sessionId (`~/.config/cav/forks.json`).
+- `internal/unpark/` — cav-local set of stopped sessions brought back to the main pane with `b` (`~/.config/cav/unparked.json`).
 - `internal/dirs/` — portable directory candidates for the "new session" picker.
 - `internal/preview/` — transcript snippet extraction for the markdown preview
   (non-live sessions).
@@ -150,6 +151,10 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   and returns to the main window. Both ways a session leaves the main list land it
   here: stopping a live one (`claude stop`) and removing a finished/dropped one
   with `d` (a cav-local mark — see **Remove**). `isStopped` decides membership.
+  `b` brings the selected stopped session **back to the main pane** as-is (keeping
+  its status; it nests into the fork tree there) — a cav-local `unparked` mark
+  (`~/.config/cav/unparked.json`) that overrides `isStopped`. `d` clears the mark,
+  returning it to the stopped window; `b`/`d` are inverses and both persist.
 - **Preview pane** (right, 50% width, `p` toggles), reloaded on a ~2s throttle
   (`previewRefresh`) even though the list refreshes continuously, so `claude logs`
   isn't hammered; a selection change reloads it immediately:
@@ -203,7 +208,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   and inherits the parent's name (via `--resume`) — `R`-rename to distinguish.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
-  `F` fork (nests the child under the parent) · `d` remove · `l` logs ·
+  `F` fork (nests the child under the parent) · `d` remove · `b` bring back (a
+  stopped session to the main pane) · `l` logs ·
   `o` group (cycle dir→status / status→dir / alphabetical) ·
   `s` stopped-window toggle · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
   scroll preview · `/` filter (metadata; **live fuzzy** — type to narrow
@@ -224,6 +230,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   undo by editing this file.
 - `~/.config/cav/forks.json` — cav-local fork tree (forked child's jobId → parent
   sessionId) so children nest under their parent in the list; undo by editing it.
+- `~/.config/cav/unparked.json` — cav-local set of stopped session IDs brought back
+  to the main pane with `b` (overrides the stopped-window classification).
 - `~/.config/cav/roots.txt` — optional roots for the new-session dir picker
   (one path per line, `#` comments, `~` expansion). If absent, common dev dirs
   are auto-detected (`~/go/src`, `~/src`, `~/dev`, `~/projects`, ...).

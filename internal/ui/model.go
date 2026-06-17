@@ -21,6 +21,7 @@ import (
 	"github.com/omeryahud/cav/internal/preview"
 	"github.com/omeryahud/cav/internal/search"
 	"github.com/omeryahud/cav/internal/termview"
+	"github.com/omeryahud/cav/internal/unpark"
 )
 
 // previewMinWidth is the terminal width below which the preview pane is hidden.
@@ -112,6 +113,7 @@ type Model struct {
 	names        *names.Store      // cav-local display-name overrides
 	dismissed    *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
 	forks        *forks.Store      // cav-local child-jobId -> parent-sessionId (fork tree)
+	unparked     *unpark.Store     // cav-local session IDs brought back to the main pane (b)
 	depth        map[string]int    // sessionId -> fork-tree depth (0 = top-level), set by recompute
 	groupMode    grouping          // none (alphabetical) | dir→status | status→dir (o cycles)
 	stoppedView  bool              // true: showing the stopped-sessions window (s toggles)
@@ -160,6 +162,7 @@ func New(initialFilter string) (*Model, error) {
 		names:       names.Load(),
 		dismissed:   dismiss.Load(),
 		forks:       forks.Load(),
+		unparked:    unpark.Load(),
 		input:       ti,
 		mode:        modeList,
 		groupMode:   groupDirStatus,
@@ -768,6 +771,9 @@ func (m *Model) statusOf(s claude.Session) string {
 // the stopped window instead of vanishing — visible and resumable there — and a
 // resumed one (live again) leaves it for the main window.
 func (m *Model) isStopped(s claude.Session) bool {
+	if m.unparked.Has(s.SessionID) {
+		return false // brought back to the main pane with b (overrides stopped/dismissed)
+	}
 	return m.statusOf(s) == "stopped" || m.justStopped[s.SessionID] ||
 		(m.dismissed.Has(s.SessionID) && !hasLiveWorker(s))
 }

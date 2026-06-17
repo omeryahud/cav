@@ -207,6 +207,31 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "forking " + m.displayName(*s) + "…"
 			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s))
 		}
+	case "b":
+		// Bring a stopped session back to the main pane (relocated as-is, keeping
+		// its status); it nests into the fork tree there. d returns it — inverse of d.
+		s := m.current()
+		if s == nil {
+			break
+		}
+		if !m.isStopped(*s) {
+			m.status = m.displayName(*s) + " is already in the main list"
+			break
+		}
+		sid, name := s.SessionID, m.displayName(*s)
+		if err := m.unparked.Add(sid); err != nil {
+			m.err = err
+			break
+		}
+		m.stoppedView = false
+		m.status = "brought " + name + " back to the main list"
+		m.recompute()
+		for i := range m.view {
+			if m.view[i].SessionID == sid {
+				m.cursor = i
+				break
+			}
+		}
 	case "n":
 		m.mode = modePickDir
 		m.pickAll, m.pickHit, m.pickCur = nil, nil, 0
@@ -434,6 +459,16 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		m.pending = nil
 		if s == nil {
+			return m, nil
+		}
+		if m.unparked.Has(s.SessionID) {
+			// It was brought back to the main pane (b); d returns it to the stopped window.
+			if err := m.unparked.Remove(s.SessionID); err != nil {
+				m.err = err
+				return m, nil
+			}
+			m.status = "moved " + m.displayName(*s) + " back to the stopped window (s)"
+			m.recompute()
 			return m, nil
 		}
 		if hasLiveWorker(*s) {
