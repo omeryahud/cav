@@ -101,8 +101,12 @@ The merge:
    ("not registered with the daemon"). State comes from `JobState(jobId)`.
 2. Add on-disk `ScanJobs` records **not** already covered by a live session
    (dedup by sessionId *and* job id — a branched session shares its job with the
-   live one) and updated within `recentDays` (7). This keeps stopped and
-   sleep-dropped sessions visible and resumable.
+   live one). **No age window:** every session stays visible until the user hides
+   it with `d` (which moves it to the stopped window), so nothing silently
+   disappears — this keeps stopped and sleep-dropped sessions visible and
+   resumable, and (crucially) stops the flicker where a live-but-idle session
+   whose on-disk `updatedAt` was stale vanished the moment the flaky daemon
+   dropped it from one `agents --json` poll.
 3. **Interactive** sessions (`kind:"interactive"` from `agents --json` — a plain
    `claude` REPL, a `!` bash command, or an agent-mode/stream-json child) are
    **filtered out** in `doRefresh` (step 1), so they never enter `m.all`. cav
@@ -160,6 +164,14 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   its status; it nests into the fork tree there) — a cav-local `unparked` mark
   (`~/.config/cav/unparked.json`) that overrides `isStopped`. `d` clears the mark,
   returning it to the stopped window; `b`/`d` are inverses and both persist.
+  The stopped window **keeps the fork tree** even when a child's parent isn't
+  stopped: a hidden forked child whose parent is still active (in the main pane)
+  shows the parent as a faint, **non-selectable "ghost" context row** (`↑ main`)
+  with the child nested below it (`└─`). The ghost is render-only — it's not in
+  `m.view`, so the cursor and all key actions only ever touch the real stopped
+  session. `applyForkTree` returns the ghost map (`m.ghostParent`, first child of
+  a group → its parent session, resolved from `m.all`); only the stopped view
+  populates it. `groupedVisual`/`flatVisual` draw the ghost just above the branch.
 - **Preview pane** (right, 50% width, `p` toggles), reloaded on a ~2s throttle
   (`previewRefresh`) even though the list refreshes continuously, so `claude logs`
   isn't hammered; a selection change reloads it immediately:

@@ -196,22 +196,38 @@ func (m *Model) listLines(h, width int) []string {
 		}
 		return fit([]string{dimStyle.Render(empty)}, h)
 	}
+	var vlines []string
+	var sel int
 	if m.groupMode != groupNone {
-		vlines, sel := m.groupedVisual(width)
-		top := windowTop(sel, len(vlines), h)
-		end := top + h
-		if end > len(vlines) {
-			end = len(vlines)
-		}
-		return fit(vlines[top:end], h)
+		vlines, sel = m.groupedVisual(width)
+	} else {
+		vlines, sel = m.flatVisual(width)
 	}
+	top := windowTop(sel, len(vlines), h)
+	end := top + h
+	if end > len(vlines) {
+		end = len(vlines)
+	}
+	return fit(vlines[top:end], h)
+}
+
+// flatVisual renders the ungrouped (alphabetical) view: one row per session, no
+// headers, with fork children still indented and any ghost-parent context row
+// drawn just above its branch. Returns the lines and the selected row's index.
+func (m *Model) flatVisual(width int) ([]string, int) {
 	var lines []string
-	top := windowTop(m.cursor, len(m.view), h)
-	for i := top; i < len(m.view) && i < top+h; i++ {
+	sel := 0
+	for i := range m.view {
 		s := m.view[i]
+		if g, ok := m.ghostParent[s.SessionID]; ok {
+			lines = append(lines, m.ghostRowLine(g, width))
+		}
+		if i == m.cursor {
+			sel = len(lines)
+		}
 		lines = append(lines, m.rowLine(s, i == m.cursor, m.roster[s.SessionID] != "", width))
 	}
-	return fit(lines, h)
+	return lines, sel
 }
 
 // groupedVisual renders the view with two header levels, ordered by groupMode:
@@ -223,16 +239,9 @@ func (m *Model) groupedVisual(width int) ([]string, int) {
 	sel := 0
 	byDir := m.groupMode == groupDirStatus
 	lastCWD, lastRank := "\x00", -1
-	for i := range m.view {
-		s := m.view[i]
-		if m.depth[s.SessionID] > 0 {
-			// Forked child: nests under its parent — no dir/status header of its own.
-			if i == m.cursor {
-				sel = len(lines)
-			}
-			lines = append(lines, m.rowLine(s, i == m.cursor, m.roster[s.SessionID] != "", width))
-			continue
-		}
+	// emitHeaders appends the dir/status headers for s's group, in the order set by
+	// groupMode, tracking the last-emitted cwd/rank so they aren't repeated.
+	emitHeaders := func(s claude.Session) {
 		rank := statusRank(m.statusOf(s))
 		if byDir {
 			if s.CWD != lastCWD {
@@ -259,6 +268,30 @@ func (m *Model) groupedVisual(width int) ([]string, int) {
 				lastCWD = s.CWD
 			}
 		}
+	}
+	for i := range m.view {
+		s := m.view[i]
+		// Ghost parent: a stopped fork child whose parent is active (main pane).
+		// Anchor the group headers off the child itself, then draw the parent as a
+		// faint context row right above the branch.
+		if g, ok := m.ghostParent[s.SessionID]; ok {
+			emitHeaders(s)
+			lines = append(lines, m.ghostRowLine(g, width))
+			if i == m.cursor {
+				sel = len(lines)
+			}
+			lines = append(lines, m.rowLine(s, i == m.cursor, m.roster[s.SessionID] != "", width))
+			continue
+		}
+		if m.depth[s.SessionID] > 0 {
+			// Forked child: nests under its parent — no dir/status header of its own.
+			if i == m.cursor {
+				sel = len(lines)
+			}
+			lines = append(lines, m.rowLine(s, i == m.cursor, m.roster[s.SessionID] != "", width))
+			continue
+		}
+		emitHeaders(s)
 		if i == m.cursor {
 			sel = len(lines)
 		}
@@ -324,6 +357,24 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 		body = nameStyle.Render(body)
 	}
 	return "  " + dotStyle.Render(glyph) + " " + body
+}
+
+// ghostRowLine renders a forked child's parent as a faint, non-selectable context
+// row in the stopped window — the parent itself lives in the main pane. It mirrors
+// rowLine's columns so the branch below lines up, but is dimmed throughout and
+// tagged "↑ main" to show the parent is active elsewhere.
+func (m *Model) ghostRowLine(s claude.Session, width int) string {
+	st := m.statusOf(s)
+	glyph, _ := statusGlyphStyle(st)
+	nameW := clamp(width-18, 18, 50)
+	body := fmt.Sprintf("%-*s %-8s", nameW, truncate(m.displayName(s), nameW), statusLabelFor(st))
+	body += "  ↑ main"
+	avail := width - 4
+	if avail < 1 {
+		avail = 1
+	}
+	body = truncate(body, avail)
+	return "  " + dimStyle.Render(glyph) + " " + dimStyle.Render(body)
 }
 
 func (m *Model) previewLines(h int) []string {

@@ -36,9 +36,6 @@ const (
 	previewEmuRows = 64
 )
 
-// recentDays bounds how far back non-live on-disk sessions are shown.
-const recentDays = 7
-
 // previewRefresh throttles background preview reloads (claude logs is ~0.5s) now
 // that the list refreshes continuously; a selection change loads immediately.
 const previewRefresh = 2 * time.Second
@@ -116,6 +113,7 @@ type Model struct {
 	forks        *forks.Store      // cav-local child-jobId -> parent-sessionId (fork tree)
 	unparked     *unpark.Store     // cav-local session IDs brought back to the main pane (b)
 	depth        map[string]int    // sessionId -> fork-tree depth (0 = top-level), set by recompute
+	ghostParent  map[string]claude.Session // (stopped view) first child of a ghost group -> its active parent, shown as a faint context row
 	groupMode    grouping          // none (alphabetical) | dir→status | status→dir (o cycles)
 	stoppedView  bool              // true: showing the stopped-sessions window (s toggles)
 	justStopped  map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
@@ -236,13 +234,11 @@ func doRefresh() refreshResult {
 	// 2) On-disk jobs the daemon isn't currently serving (stopped, or dropped
 	//    after a laptop sleep). Dedup by sessionId and by job id — a branched
 	//    session shares its job with a live one, so skip that stale record.
-	cutoff := time.Now().Add(-recentDays * 24 * time.Hour)
+	//    No age window: every session stays visible until the user hides it with
+	//    d (which moves it to the stopped window), so nothing silently disappears.
 	for _, j := range jobRecs {
 		if seen[j.SessionID] || liveJobs[j.JobID] {
 			continue
-		}
-		if !j.UpdatedAt.IsZero() && j.UpdatedAt.Before(cutoff) {
-			continue // prune old, non-live jobs to bound clutter
 		}
 		sessions = append(sessions, claude.Session{
 			SessionID: j.SessionID,
@@ -689,37 +685,64 @@ func (m *Model) recompute() {
 	}
 	// Nest forked children directly under their parent (a tree), overriding the
 	// flat sort for the children; top-level sessions keep their sorted order.
-	v, m.depth = m.applyForkTree(v)
+	v, m.depth, m.ghostParent = m.applyForkTree(v)
 	m.view = v
 	m.cursor = clamp(m.cursor, 0, lastIndex(len(v)))
 }
 
 // applyForkTree reorders v so each forked child follows its parent, recording a
 // depth per session (0 = top-level, 1 = child, …) for indented rendering.
-// Children ride with their parent regardless of the sort; a child whose parent
-// isn't in v stays top-level.
-func (m *Model) applyForkTree(v []claude.Session) ([]claude.Session, map[string]int) {
+// Children ride with their parent regardless of the sort. A child whose parent
+// is in v nests directly under it. In the stopped window, a child whose parent
+// is NOT in v but still exists (it's active, in the main window) becomes a
+// "ghost child": it keeps its indent (depth ≥ 1) and the returned ghost map
+// points its first sibling at the parent session, so the view can draw that
+// parent as a faint, non-selectable context row above the branch. A child whose
+// parent exists nowhere stays top-level.
+func (m *Model) applyForkTree(v []claude.Session) ([]claude.Session, map[string]int, map[string]claude.Session) {
 	if m.forks == nil || len(v) == 0 {
-		return v, nil
+		return v, nil, nil
 	}
 	inView := make(map[string]bool, len(v))
-	for i := range v {
-		inView[v[i].SessionID] = true
-	}
 	bySID := make(map[string]claude.Session, len(v))
-	parentOf := make(map[string]string, len(v))
-	childrenOf := map[string][]string{}
 	for _, s := range v {
+		inView[s.SessionID] = true
 		bySID[s.SessionID] = s
-		if p := m.forks.Parent(m.roster[s.SessionID]); p != "" && p != s.SessionID && inView[p] {
-			parentOf[s.SessionID] = p
-			childrenOf[p] = append(childrenOf[p], s.SessionID)
+	}
+	// Ghost parents (active sessions backing a stopped child) are resolved against
+	// the full session set; only the stopped window pulls them in for context.
+	var allBy map[string]claude.Session
+	if m.stoppedView {
+		allBy = make(map[string]claude.Session, len(m.all))
+		for _, s := range m.all {
+			allBy[s.SessionID] = s
 		}
 	}
-	if len(parentOf) == 0 {
-		return v, nil // no fork relationships visible — leave the sort as-is
+	parentOf := make(map[string]string, len(v)) // in-view parent (real nest)
+	childrenOf := map[string][]string{}         // in-view parent -> children
+	ghostOf := make(map[string]string, len(v))  // child -> ghost parent sid (parent not in v)
+	ghostKids := map[string][]string{}          // ghost parent sid -> children, in v order
+	for _, s := range v {
+		p := m.forks.Parent(m.roster[s.SessionID])
+		if p == "" || p == s.SessionID {
+			continue
+		}
+		switch {
+		case inView[p]:
+			parentOf[s.SessionID] = p
+			childrenOf[p] = append(childrenOf[p], s.SessionID)
+		case allBy != nil:
+			if _, ok := allBy[p]; ok {
+				ghostOf[s.SessionID] = p
+				ghostKids[p] = append(ghostKids[p], s.SessionID)
+			}
+		}
+	}
+	if len(parentOf) == 0 && len(ghostOf) == 0 {
+		return v, nil, nil // no fork relationships visible — leave the sort as-is
 	}
 	depth := make(map[string]int, len(v))
+	ghost := map[string]claude.Session{}
 	ordered := make([]claude.Session, 0, len(v))
 	seen := make(map[string]bool, len(v))
 	var emit func(sid string, d int)
@@ -735,8 +758,28 @@ func (m *Model) applyForkTree(v []claude.Session) ([]claude.Session, map[string]
 		}
 	}
 	for _, s := range v {
-		if parentOf[s.SessionID] == "" {
-			emit(s.SessionID, 0)
+		sid := s.SessionID
+		if seen[sid] {
+			continue
+		}
+		if gp, isGhost := ghostOf[sid]; isGhost {
+			// Emit the whole ghost sibling-group together; tag the first emitted
+			// child with the parent session so the view draws one context row.
+			marked := false
+			for _, c := range ghostKids[gp] {
+				if seen[c] {
+					continue
+				}
+				if !marked {
+					ghost[c] = allBy[gp]
+					marked = true
+				}
+				emit(c, 1)
+			}
+			continue
+		}
+		if parentOf[sid] == "" {
+			emit(sid, 0)
 		}
 	}
 	for _, s := range v { // any leftover (e.g. cyclic chain) → top-level
@@ -746,7 +789,7 @@ func (m *Model) applyForkTree(v []claude.Session) ([]claude.Session, map[string]
 			seen[s.SessionID] = true
 		}
 	}
-	return ordered, depth
+	return ordered, depth, ghost
 }
 
 // statusOf computes a normalized session status by combining the live
