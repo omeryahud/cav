@@ -51,6 +51,7 @@ after.
   - `view.go` — layout + rendering, Lip Gloss styles, and `renderSnippets`
     (markdown → ANSI via glamour).
 - `internal/names/` — cav-local rename overrides (`~/.config/cav/names.json`).
+- `internal/labels/` — cav-local searchable per-session labels, edited with `L` (`~/.config/cav/labels.json`).
 - `internal/dismiss/` — cav-local set of sessions hidden with `d` (`~/.config/cav/dismissed.json`).
 - `internal/forks/` — cav-local fork tree: forked child's jobId → parent sessionId (`~/.config/cav/forks.json`).
 - `internal/unpark/` — cav-local set of stopped sessions brought back to the main pane with `b` (`~/.config/cav/unparked.json`).
@@ -190,7 +191,13 @@ Bucket sub-headers and dots are color-coded and kept in sync.
     rendered from markdown via glamour** (role-labelled user=green,
     assistant=lavender, bottom-anchored).
   - Rendered async and cached; the cache is cleared on resize (width *or* height,
-    since the live view depends on both).
+    since the live view depends on both). Preview text is **sanitized at the cache
+    write** (`sanitizePreview`: tabs → spaces, stray CR/BS/FF/VT dropped; ANSI kept)
+    and every preview line is **ANSI-aware hard-clipped to the pane width** in
+    `joinColumns` — glamour doesn't wrap code-block lines and the terminal expands
+    tabs past the measured width, so an unclipped over-wide line overflows the
+    terminal row and shears the whole layout (the "highlight X and the view
+    distorts" bug). Don't remove either layer.
   - **Scrollable:** `ctrl+u`/`ctrl+d` (half page) and `pgup`/`pgdn` (full page)
     scroll the pane. It's bottom-anchored with an upward offset (`previewScroll`);
     the header shows `↑`/`↑↓`/`↓` for which way more content exists, and the offset
@@ -223,9 +230,19 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   (per-row `depth`); nested children ride with their parent and get no dir/status
   header of their own. The child is highlighted once it registers (like a create),
   and inherits the parent's name (via `--resume`) — `R`-rename to distinguish.
+- **Clone** (`C`): same invocation as fork — a new background session continuing
+  the highlighted session's conversation — but **independent**: no fork link is
+  recorded, so it appears top-level, not nested (`forkedMsg.record` distinguishes
+  the two paths). Highlighted once it registers; rename with `R`.
+- **Labels** (`L`): free-form, space-separated tags per session, kept cav-locally
+  (`internal/labels`, `~/.config/cav/labels.json`; empty input clears). They render
+  at the end of the row as `#tag1 #tag2` (`labelSuffix`) and are part of the `/`
+  filter haystack (`sessionMatches`: substring + subsequence), so sessions are
+  findable by label.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
-  `F` fork (nests the child under the parent) · `d` remove · `b` bring back (a
+  `L` label (searchable `#tags`) · `F` fork (nests the child under the parent) ·
+  `C` clone (independent copy, top-level) · `d` remove · `b` bring back (a
   stopped session to the main pane) · `l` logs ·
   `o` group (cycle dir→status / status→dir / alphabetical) ·
   `s` stopped-window toggle · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
@@ -241,6 +258,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 
 - `~/.config/cav/names.json` — cav-local rename overrides (the `claude` CLI has
   no rename verb and the daemon name isn't writable, so renames are cav-only).
+- `~/.config/cav/labels.json` — cav-local per-session labels (`L`; space-separated
+  tags, shown as `#tag` on the row, matched by the `/` filter).
 - `~/.config/cav/dismissed.json` — cav-local set of session IDs removed with `d`
   (those with no live worker). Non-destructive: they stay on disk and move to the
   **stopped window** (out of the main list) — still visible and resumable there;

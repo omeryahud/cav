@@ -86,7 +86,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case previewMsg:
-		m.prevCache[msg.id] = msg.text
+		m.prevCache[msg.id] = sanitizePreview(msg.text)
 		return m, nil
 
 	case errMsg:
@@ -115,13 +115,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil             // the background loop will see it and highlight it
 
 	case forkedMsg:
-		// Fork (F) created a child continuing parentSID's conversation under a new
-		// session id. Record child→parent so it nests under the parent, and
-		// highlight the child once it appears (like a create).
-		if err := m.forks.Set(msg.childJobID, msg.parentSID); err != nil {
-			m.err = err
+		// Fork (F) or clone (C) created a new session continuing parentSID's
+		// conversation. A fork records child→parent so it nests under the parent;
+		// a clone stays top-level (no link). Highlight it once it appears.
+		if msg.record {
+			if err := m.forks.Set(msg.childJobID, msg.parentSID); err != nil {
+				m.err = err
+			}
+			m.status = "forked " + msg.label
+		} else {
+			m.status = "cloned " + msg.label
 		}
-		m.status = "forked " + msg.label
 		m.selectJobID = msg.childJobID
 		return m, nil
 
@@ -150,6 +154,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmKey(msg)
 	case modeRename:
 		return m.handleRenameKey(msg)
+	case modeLabel:
+		return m.handleLabelKey(msg)
 	case modePickDir:
 		return m.handlePickKey(msg)
 	case modeNewProject:
@@ -218,7 +224,23 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// conversation, nested under it in the list.
 		if s := m.current(); s != nil {
 			m.status = "forking " + m.displayName(*s) + "…"
-			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s))
+			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), true)
+		}
+	case "C":
+		// Clone the highlighted session: same as fork — a new bg session continuing
+		// its conversation — but independent (top-level), not nested under it.
+		if s := m.current(); s != nil {
+			m.status = "cloning " + m.displayName(*s) + "…"
+			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), false)
+		}
+	case "L":
+		// Edit the highlighted session's labels (space-separated tags; empty clears).
+		if s := m.current(); s != nil {
+			m.mode = modeLabel
+			m.input.SetValue(m.labels.Get(s.SessionID))
+			m.input.Placeholder = "labels (space-separated; empty clears)…"
+			m.input.CursorEnd()
+			return m, m.input.Focus()
 		}
 	case "b":
 		// Bring a stopped session back to the main pane (relocated as-is, keeping
@@ -531,6 +553,30 @@ func (m *Model) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.status = "renamed"
 			}
+		}
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m *Model) handleLabelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		if s := m.current(); s != nil {
+			if err := m.labels.Set(s.SessionID, strings.Join(strings.Fields(m.input.Value()), " ")); err != nil {
+				m.err = err
+			} else {
+				m.status = "labeled"
+			}
+			m.recompute() // an active / filter may match differently now
 		}
 		m.mode = modeList
 		m.input.Blur()

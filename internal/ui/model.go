@@ -17,6 +17,7 @@ import (
 	"github.com/omeryahud/cav/internal/dirs"
 	"github.com/omeryahud/cav/internal/dismiss"
 	"github.com/omeryahud/cav/internal/forks"
+	"github.com/omeryahud/cav/internal/labels"
 	"github.com/omeryahud/cav/internal/names"
 	"github.com/omeryahud/cav/internal/preview"
 	"github.com/omeryahud/cav/internal/search"
@@ -59,6 +60,7 @@ const (
 	modeNew
 	modeConfirm
 	modeRename
+	modeLabel
 	modePickDir
 	modeNewProject
 	modeNewName
@@ -92,12 +94,16 @@ type (
 		jobID string
 		label string
 	}
-	// forkedMsg follows F (fork): record childJobID -> parentSID in the fork store
-	// and highlight the new child once it appears.
+	// forkedMsg follows F (fork) or C (clone) — both spawn a new bg session
+	// continuing parentSID's conversation. record distinguishes them: a fork
+	// records childJobID -> parentSID in the fork store (nests under the parent);
+	// a clone records nothing, so the new session stays top-level. Either way the
+	// new session is highlighted once it appears.
 	forkedMsg struct {
 		childJobID string
 		parentSID  string
 		label      string
+		record     bool // true = fork (nest); false = clone (independent)
 	}
 )
 
@@ -109,6 +115,7 @@ type Model struct {
 	states       map[string]string // sessionId -> job lifecycle state (working/done/blocked)
 	live         map[string]bool   // sessionId -> has a live daemon worker (else respawn to attach)
 	names        *names.Store      // cav-local display-name overrides
+	labels       *labels.Store     // cav-local searchable labels (L), shown as #tag on the row
 	dismissed    *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
 	forks        *forks.Store      // cav-local child-jobId -> parent-sessionId (fork tree)
 	unparked     *unpark.Store     // cav-local session IDs brought back to the main pane (b)
@@ -160,6 +167,7 @@ func New(initialFilter string) (*Model, error) {
 	return &Model{
 		filter:      initialFilter,
 		names:       names.Load(),
+		labels:      labels.Load(),
 		dismissed:   dismiss.Load(),
 		forks:       forks.Load(),
 		unparked:    unpark.Load(),
@@ -303,10 +311,10 @@ func createCmd(cwd, name, prompt string) tea.Cmd {
 	}
 }
 
-// forkCmd forks parentSID — continuing its conversation in a new child bg session
-// (see claude.Fork) — and reports the child's job id so the UI can record the
-// link and highlight the child.
-func forkCmd(parentSID, parentJobID, cwd, label string) tea.Cmd {
+// forkCmd forks (record=true) or clones (record=false) parentSID — either way a
+// new bg session continuing its conversation (see claude.Fork) — and reports the
+// child's job id so the UI can highlight it, plus (fork only) record the nest link.
+func forkCmd(parentSID, parentJobID, cwd, label string, record bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
@@ -314,7 +322,7 @@ func forkCmd(parentSID, parentJobID, cwd, label string) tea.Cmd {
 		if err != nil {
 			return actionMsg{err: err}
 		}
-		return forkedMsg{childJobID: childJob, parentSID: parentSID, label: label}
+		return forkedMsg{childJobID: childJob, parentSID: parentSID, label: label, record: record}
 	}
 }
 
@@ -482,6 +490,16 @@ func (m *Model) rowName(s claude.Session) string {
 		return d + "/" + m.displayName(s)
 	}
 	return m.displayName(s)
+}
+
+// labelSuffix renders a session's labels for its row — " #tag1 #tag2" — or ""
+// if it has none. Labels are cav-local (L to edit) and matched by the / filter.
+func (m *Model) labelSuffix(sid string) string {
+	l := m.labels.Get(sid)
+	if l == "" {
+		return ""
+	}
+	return " #" + strings.Join(strings.Fields(l), " #")
 }
 
 func (m *Model) showPreview() bool { return m.previewOn && m.width >= previewMinWidth }
@@ -898,6 +916,7 @@ func bucketLabel(rank int) string {
 // letters in order); status/kind/id match only as a substring (no hex-id noise).
 func (m *Model) sessionMatches(s claude.Session, q string) bool {
 	name := strings.ToLower(m.displayName(s))
+	label := strings.ToLower(m.labels.Get(s.SessionID))
 	cwd := strings.ToLower(s.CWD)
 	base := cwd
 	if i := strings.LastIndexByte(base, '/'); i >= 0 {
@@ -905,9 +924,11 @@ func (m *Model) sessionMatches(s claude.Session, q string) bool {
 	}
 	meta := strings.ToLower(s.Status + " " + s.Kind + " " + s.SessionID)
 	return strings.Contains(name, q) ||
+		strings.Contains(label, q) ||
 		strings.Contains(base, q) ||
 		strings.Contains(cwd, q) ||
 		strings.Contains(meta, q) ||
 		subseq(name, q) ||
+		subseq(label, q) ||
 		subseq(base, q)
 }

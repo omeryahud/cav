@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/omeryahud/cav/internal/claude"
 	"github.com/omeryahud/cav/internal/preview"
@@ -125,7 +126,7 @@ func (m *Model) View() string {
 	case m.showPreview():
 		pw := m.previewWidth()
 		lw := m.width - pw - 3
-		mid = joinColumns(m.listLines(midH, lw), lw, m.previewLines(midH), midH)
+		mid = joinColumns(m.listLines(midH, lw), lw, m.previewLines(midH), pw, midH)
 	default:
 		mid = m.listLines(midH, m.width)
 	}
@@ -153,6 +154,8 @@ func (m *Model) headerLines() []string {
 		second = hintStyle.Render("search: ") + m.input.View()
 	case modeRename:
 		second = hintStyle.Render("rename: ") + m.input.View()
+	case modeLabel:
+		second = hintStyle.Render("labels: ") + m.input.View()
 	case modeNew:
 		second = hintStyle.Render("new in "+homeShorten(m.newCWD)+": ") + m.input.View()
 	case modeNewProject:
@@ -332,6 +335,7 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 		// dirname/ prefix (the parent row already shows the dir).
 		name = strings.Repeat("  ", d-1) + "└─ " + m.displayName(s)
 	}
+	name += m.labelSuffix(s.SessionID)
 	body := fmt.Sprintf("%-*s %-8s %4s",
 		nameW, truncate(name, nameW), statusLabelFor(st), humanAge(s.Started()))
 	avail := width - 4 // marker(2) + dot(1) + space(1)
@@ -455,6 +459,8 @@ func (m *Model) footerBlock() string {
 		status = dimStyle.Render("↑/↓ or ctrl+j/k navigate · ↵ open · tab keep filter · esc clear")
 	case m.mode == modeRename:
 		status = dimStyle.Render("↵ save · esc cancel · empty name clears the override")
+	case m.mode == modeLabel:
+		status = dimStyle.Render("↵ save · esc cancel · space-separated tags · empty clears · / finds them")
 	case m.err != nil:
 		status = errStyle.Render("error: " + m.err.Error())
 	case m.status != "":
@@ -469,7 +475,8 @@ func (m *Model) helpBar() string {
 		stopped = "back"
 	}
 	binds := []struct{ k, d string }{
-		{"n", "new"}, {"N", "new project"}, {"R", "rename"}, {"F", "fork"},
+		{"n", "new"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
+		{"F", "fork"}, {"C", "clone"},
 		{"d", "remove"}, {"b", "bring back"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
@@ -499,7 +506,7 @@ func windowTop(cursor, n, h int) int {
 	return top
 }
 
-func joinColumns(left []string, lw int, right []string, h int) []string {
+func joinColumns(left []string, lw int, right []string, rw, h int) []string {
 	sep := dimStyle.Render(" │ ")
 	out := make([]string, h)
 	for i := 0; i < h; i++ {
@@ -510,9 +517,24 @@ func joinColumns(left []string, lw int, right []string, h int) []string {
 		if i < len(right) {
 			r = right[i]
 		}
+		// Hard-clip the right column: a preview line wider than the pane (an
+		// unwrapped code-block line, tab-expanded text, …) would overflow the
+		// terminal row and shear the whole layout. ANSI-aware, and reset after the
+		// cut so a truncated color run can't bleed into the next line.
+		if lipgloss.Width(r) > rw {
+			r = ansi.Truncate(r, rw, "…") + "\x1b[0m"
+		}
 		out[i] = padRight(l, lw) + sep + r
 	}
 	return out
+}
+
+// sanitizePreview neutralizes control characters that break terminal layout in
+// preview text before it's cached: tabs become spaces (the terminal would expand
+// them past the measured width) and stray CR/BS/FF/VT are dropped. ANSI escapes
+// (colors from termview/glamour) pass through untouched.
+func sanitizePreview(s string) string {
+	return strings.NewReplacer("\t", "    ", "\r", "", "\b", "", "\f", "", "\v", "").Replace(s)
 }
 
 // fit pads with blank lines or truncates so the slice is exactly n long.
