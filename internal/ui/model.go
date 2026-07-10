@@ -41,6 +41,10 @@ const (
 // that the list refreshes continuously; a selection change loads immediately.
 const previewRefresh = 2 * time.Second
 
+// statusTTL is how long a footer status note lingers before the refresh loop
+// clears it (errors are kept until the user acts).
+const statusTTL = 6 * time.Second
+
 // grouping is how the session list is organized; the o key cycles through these
 // in order.
 type grouping int
@@ -151,10 +155,12 @@ type Model struct {
 
 	refreshes chan refreshResult // continuous background refresh results (see refreshLoop)
 
-	status string
-	err    error
-	width  int
-	height int
+	status     string
+	statusPrev string    // last status seen by the refresh loop (expiry tracking)
+	statusSeen time.Time // when statusPrev was first seen (expires after statusTTL)
+	err        error
+	width      int
+	height     int
 }
 
 // New constructs the initial model. initialFilter (the cav CLI argument)

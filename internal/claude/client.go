@@ -216,6 +216,15 @@ func parseJobID(out string) string {
 // real terminal fd (re-opening /dev/tty instead breaks input: macOS can't
 // kqueue-poll /dev/tty, so node never sees keystrokes). The binary and job id
 // are passed via env (CAV_CLAUDE / CAV_JOB) to avoid quoting.
+//
+// After a kill, the terminal input buffer is flushed before cav resumes: the
+// killed view had just sent startup queries (kitty-keyboard push, color/mode
+// reports), and the terminal's replies would otherwise be read by cav as
+// keystrokes — OSC color replies carry hex letters, so a stray 'd'/'f'/'b'
+// could open the remove-confirm, the search prompt, … The pop (CSI < u)
+// unwinds the kitty-keyboard flags the view pushed and never got to pop (a
+// no-op on terminals without the protocol), the short sleep lets in-flight
+// replies land, and tcflush discards them while cav is still suspended.
 const attachWatch = `cav_attach() {
 	"$CAV_CLAUDE" attach "$1" <&0 & A=$!
 	K=0
@@ -231,7 +240,12 @@ const attachWatch = `cav_attach() {
 		sleep 0.1
 	done
 	wait "$A"; S=$?
-	[ "$K" = 1 ] && return 0
+	if [ "$K" = 1 ]; then
+		printf '\033[<u'
+		sleep 0.15
+		python3 -c 'import sys,termios;termios.tcflush(sys.stdin.fileno(),termios.TCIFLUSH)' 2>/dev/null || true
+		return 0
+	fi
 	return "$S"
 }
 `

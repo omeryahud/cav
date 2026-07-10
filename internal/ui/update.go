@@ -27,6 +27,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.roster = msg.roster
 		m.states = msg.states
 		m.live = msg.live
+		// Expire the footer status note once it has sat unchanged for a while —
+		// action notes ("moved … to the stopped window", "renamed", …) are moment
+		// feedback, not state, and cav otherwise never clears them. Errors persist.
+		switch {
+		case m.status == "":
+			m.statusSeen = time.Time{}
+		case m.status != m.statusPrev:
+			m.statusPrev, m.statusSeen = m.status, time.Now()
+		case time.Since(m.statusSeen) > statusTTL:
+			m.status, m.statusPrev = "", ""
+		}
 		// Remember each session's name (persisted) so a later refresh that
 		// momentarily lacks it (the daemon drops it from agents --json, state.json
 		// often has none) — or a fresh startup — doesn't blank the row to the short

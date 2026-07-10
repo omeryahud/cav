@@ -225,7 +225,17 @@ Bucket sub-headers and dots are color-coded and kept in sync.
     (a non-interactive shell gives a background command /dev/null stdin
     otherwise, making attach exit instantly) — and NOT `</dev/tty` (macOS can't
     kqueue-poll /dev/tty, so node would never see keystrokes). A watchdog kill is
-    reported as exit 0; other exits keep their status.
+    reported as exit 0; other exits keep their status. After a kill the wrapper
+    **flushes the terminal input buffer** (pop kitty flags with `CSI < u`, short
+    sleep, `tcflush`) before cav resumes: the killed view had just issued startup
+    queries and the terminal's replies would otherwise reach cav as keystrokes —
+    OSC color replies carry hex letters, so a stray `d`/`f`/`b` opened the
+    remove-confirm ("Remove … to the stopped window?" appearing by itself), the
+    search prompt, etc.
+- The footer **status note auto-expires** after `statusTTL` (~6s) — the refresh
+  loop clears an unchanged note ("moved … to the stopped window", "renamed", …)
+  so moment-feedback doesn't linger as if it were state. Errors persist until
+  the user acts.
 - **Remove** (`d`): both branches move the session to the **stopped window**, out
   of the main list. With a **live worker** (status from `agents --json`), runs
   `claude stop` (optimistic, reconciled on refresh). With **no** live worker
