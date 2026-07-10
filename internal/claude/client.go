@@ -195,9 +195,58 @@ func parseJobID(out string) string {
 	return ""
 }
 
-// AttachCmd builds the command to attach to a session (full terminal handoff).
+// attachWatch is a sh prelude defining cav_attach, which runs `claude attach`
+// under a watchdog so that detaching with ← returns to cav. Since claude
+// ~2.1.2xx, an ←-detach doesn't exit the attach process: it relaunches the
+// native agent view (`claude agents`, CLAUDE_AGENTS_SELECT preselected) on the
+// same terminal — observed as the attach process exec-replacing itself (same
+// pid, new args), with a spawned blocking child as the code's other path —
+// which would sit on top of a suspended cav until quit by hand. There is no
+// CLI flag/env to disable just that (the disableAgentView setting kills the
+// whole background subsystem), so cav polls the attach pid (and its children)
+// and kills it the moment its args become `… agents` — then cav resumes.
+// Killing the view/client never harms the session (it keeps running either
+// way; the ~10Hz poll makes the view at most a brief flash). A kill is
+// reported as exit 0 (a detach is a normal way out); anything else keeps the
+// real status.
+//
+// Two sh subtleties, both load-bearing: the attach must run backgrounded (so
+// the shell can poll), and a background command in a non-interactive shell
+// gets stdin from /dev/null unless explicitly redirected — `<&0` keeps the
+// real terminal fd (re-opening /dev/tty instead breaks input: macOS can't
+// kqueue-poll /dev/tty, so node never sees keystrokes). The binary and job id
+// are passed via env (CAV_CLAUDE / CAV_JOB) to avoid quoting.
+const attachWatch = `cav_attach() {
+	"$CAV_CLAUDE" attach "$1" <&0 & A=$!
+	K=0
+	while kill -0 "$A" 2>/dev/null; do
+		case "$(ps -ww -o args= -p "$A" 2>/dev/null)" in
+		*\ agents) kill "$A" 2>/dev/null && K=1 ;;
+		esac
+		for c in $(pgrep -P "$A" 2>/dev/null); do
+			case "$(ps -ww -o args= -p "$c" 2>/dev/null)" in
+			*\ agents) kill "$c" 2>/dev/null && K=1 ;;
+			esac
+		done
+		sleep 0.1
+	done
+	wait "$A"; S=$?
+	[ "$K" = 1 ] && return 0
+	return "$S"
+}
+`
+
+// attachEnv is the environment for the attach watchdog shell.
+func attachEnv(jobID string) []string {
+	return append(os.Environ(), "CAV_CLAUDE="+Bin(), "CAV_JOB="+jobID)
+}
+
+// AttachCmd builds the command to attach to a session (full terminal handoff),
+// watchdogged so an ←-detach returns to cav instead of the native agent view.
 func AttachCmd(id string) *exec.Cmd {
-	return exec.Command(Bin(), "attach", id)
+	cmd := exec.Command("sh", "-c", attachWatch+`cav_attach "$CAV_JOB"`)
+	cmd.Env = attachEnv(id)
+	return cmd
 }
 
 // LogsShellCmd builds a shell command that pages a session's logs with less.
@@ -209,9 +258,11 @@ func LogsShellCmd(id string) *exec.Cmd {
 // the path the native agents view uses. `claude attach` alone fails once the
 // daemon has released the worker ("job not found"); `claude respawn` restarts it
 // (same job id) from the stored respawnFlags/resumeSessionId, after which attach
-// succeeds.
+// succeeds. The attach runs under the same ←-detach watchdog as AttachCmd.
 func ResumeAttachCmd(jobID string) *exec.Cmd {
-	return exec.Command("sh", "-c", fmt.Sprintf("%s respawn %s && %s attach %s", Bin(), jobID, Bin(), jobID))
+	cmd := exec.Command("sh", "-c", attachWatch+`"$CAV_CLAUDE" respawn "$CAV_JOB" && cav_attach "$CAV_JOB"`)
+	cmd.Env = attachEnv(jobID)
+	return cmd
 }
 
 // Fork starts a new background session that continues parentSessionID's

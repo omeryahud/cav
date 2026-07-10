@@ -213,6 +213,19 @@ Bucket sub-headers and dots are color-coded and kept in sync.
     restarts the session **in place** (same job id, from the stored
     respawnFlags/resumeSessionId), after which attach succeeds — the same revive
     the native agent view does. From the stopped window, resuming returns to main.
+  - Both paths run attach under the **`attachWatch` watchdog** (`attachWatch` in
+    `internal/claude/client.go`): since claude ~2.1.2xx, detaching with `←`
+    doesn't exit the attach — it relaunches the **native agent view** on the same
+    terminal (observed: the attach pid exec-replaces itself with `claude agents`),
+    which would cover a suspended cav until quit by hand; no CLI flag disables
+    just that. The watchdog polls the attach pid (and children) and kills it the
+    moment its args become `… agents`, so `←` lands back in cav (the view is at
+    most a brief flash; the session itself keeps running). Two load-bearing sh
+    details, don't "clean them up": the attach is backgrounded **with `<&0`**
+    (a non-interactive shell gives a background command /dev/null stdin
+    otherwise, making attach exit instantly) — and NOT `</dev/tty` (macOS can't
+    kqueue-poll /dev/tty, so node would never see keystrokes). A watchdog kill is
+    reported as exit 0; other exits keep their status.
 - **Remove** (`d`): both branches move the session to the **stopped window**, out
   of the main list. With a **live worker** (status from `agents --json`), runs
   `claude stop` (optimistic, reconciled on refresh). With **no** live worker
