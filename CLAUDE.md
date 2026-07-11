@@ -231,7 +231,12 @@ Bucket sub-headers and dots are color-coded and kept in sync.
     queries and the terminal's replies would otherwise reach cav as keystrokes —
     OSC color replies carry hex letters, so a stray `d`/`f`/`b` opened the
     remove-confirm ("Remove … to the stopped window?" appearing by itself), the
-    search prompt, etc.
+    search prompt, etc. The wrapper also sets the **terminal title to the
+    session's display name** while attached (`CAV_TITLE`): push the old title on
+    the xterm title stack (`CSI 22;0t`), set ours (`OSC 0`), pop on the way out
+    (`CSI 23;0t`) — terminals without a title stack (tmux) just keep the
+    last-set name; the attached session's own stream may retitle mid-session
+    (Claude Code does), which cav doesn't fight.
 - The footer **status note auto-expires** after `statusTTL` (~6s) — the refresh
   loop clears an unchanged note ("moved … to the stopped window", "renamed", …)
   so moment-feedback doesn't linger as if it were state. Errors persist until

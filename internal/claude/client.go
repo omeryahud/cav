@@ -225,7 +225,16 @@ func parseJobID(out string) string {
 // unwinds the kitty-keyboard flags the view pushed and never got to pop (a
 // no-op on terminals without the protocol), the short sleep lets in-flight
 // replies land, and tcflush discards them while cav is still suspended.
+//
+// The wrapper also sets the terminal title to the session's name (CAV_TITLE)
+// for the duration of the attach: push the current title on the xterm title
+// stack (CSI 22;0t), set ours (OSC 0), and pop on the way out (CSI 23;0t) —
+// on terminals without a title stack the pushes/pops are ignored and the title
+// simply keeps the last-set name. The attached session's own output stream may
+// retitle mid-session (Claude Code updates titles); that's its prerogative —
+// cav sets the name at the boundary it controls.
 const attachWatch = `cav_attach() {
+	[ -n "$CAV_TITLE" ] && printf '\033[22;0t\033]0;%s\007' "$CAV_TITLE"
 	"$CAV_CLAUDE" attach "$1" <&0 & A=$!
 	K=0
 	while kill -0 "$A" 2>/dev/null; do
@@ -244,22 +253,25 @@ const attachWatch = `cav_attach() {
 		printf '\033[<u'
 		sleep 0.15
 		python3 -c 'import sys,termios;termios.tcflush(sys.stdin.fileno(),termios.TCIFLUSH)' 2>/dev/null || true
-		return 0
 	fi
+	[ -n "$CAV_TITLE" ] && printf '\033[23;0t'
+	[ "$K" = 1 ] && return 0
 	return "$S"
 }
 `
 
-// attachEnv is the environment for the attach watchdog shell.
-func attachEnv(jobID string) []string {
-	return append(os.Environ(), "CAV_CLAUDE="+Bin(), "CAV_JOB="+jobID)
+// attachEnv is the environment for the attach watchdog shell. title is the
+// session display name shown as the terminal title while attached.
+func attachEnv(jobID, title string) []string {
+	return append(os.Environ(), "CAV_CLAUDE="+Bin(), "CAV_JOB="+jobID, "CAV_TITLE="+title)
 }
 
 // AttachCmd builds the command to attach to a session (full terminal handoff),
 // watchdogged so an ←-detach returns to cav instead of the native agent view.
-func AttachCmd(id string) *exec.Cmd {
+// The terminal title is set to title (the session's display name) while inside.
+func AttachCmd(id, title string) *exec.Cmd {
 	cmd := exec.Command("sh", "-c", attachWatch+`cav_attach "$CAV_JOB"`)
-	cmd.Env = attachEnv(id)
+	cmd.Env = attachEnv(id, title)
 	return cmd
 }
 
@@ -272,10 +284,11 @@ func LogsShellCmd(id string) *exec.Cmd {
 // the path the native agents view uses. `claude attach` alone fails once the
 // daemon has released the worker ("job not found"); `claude respawn` restarts it
 // (same job id) from the stored respawnFlags/resumeSessionId, after which attach
-// succeeds. The attach runs under the same ←-detach watchdog as AttachCmd.
-func ResumeAttachCmd(jobID string) *exec.Cmd {
+// succeeds. The attach runs under the same ←-detach watchdog (and terminal
+// title) as AttachCmd.
+func ResumeAttachCmd(jobID, title string) *exec.Cmd {
 	cmd := exec.Command("sh", "-c", attachWatch+`"$CAV_CLAUDE" respawn "$CAV_JOB" && cav_attach "$CAV_JOB"`)
-	cmd.Env = attachEnv(jobID)
+	cmd.Env = attachEnv(jobID, title)
 	return cmd
 }
 

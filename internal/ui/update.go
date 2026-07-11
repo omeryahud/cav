@@ -350,9 +350,9 @@ func (m *Model) openCurrent() tea.Cmd {
 	// errors ("job not found" / "not known to the daemon"). Respawn it first
 	// (same job id, from the stored respawn flags), then attach — exactly what
 	// the native agents view does.
-	cmd := claude.AttachCmd(id)
+	cmd := claude.AttachCmd(id, label) // label doubles as the terminal title while attached
 	if !m.live[s.SessionID] {
-		cmd = claude.ResumeAttachCmd(id)
+		cmd = claude.ResumeAttachCmd(id, label)
 	}
 	if m.stoppedView {
 		// Resuming leaves the stopped window; the post-attach refresh reclassifies
