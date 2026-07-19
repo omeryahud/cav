@@ -155,6 +155,12 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   session (the persisted `seen` cache — `~/.config/cav/seen.json`, loaded on
   startup — so a transient drop from `agents --json` / state.json, or a fresh
   launch, doesn't blank the row to the short id), else the short id.
+  The **name column width** (`nameColWidth`) depends on the preview pane: with
+  it on, space is tight, so the column is capped (50) and long names truncate;
+  with it off, the column stretches to the **longest visible row label** so
+  every name fits (bounded by width-18 to keep the status/age columns).
+  `rowLabel` builds the cell text (tree indent + name + `#labels`) and is shared
+  by the width calc and `rowLine` so they can't drift.
 - **Stopped window:** stopped sessions live in a **separate window**, not the main
   list. `s` switches between the main (active) window and the stopped window.
   Selecting a stopped session and pressing `↵`/`→` **resumes** it (see Open/resume)

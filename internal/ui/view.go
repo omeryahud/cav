@@ -323,19 +323,43 @@ func statusHeaderLine(rank, width, indent int) string {
 	return bucketStyle(rank).Render(truncate(strings.Repeat(" ", indent)+bucketLabel(rank), width))
 }
 
-func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
-	st := m.statusOf(s)
-	// Give the name column most of the freed space (no message snippet) up to a
-	// generous cap — names carry the dirname/ prefix now, so they run long — while
-	// the clamp keeps it from crowding the status/age columns on narrow layouts.
-	nameW := clamp(width-18, 18, 50)
+// rowLabel is the text shown in a row's name cell: dirname/name (or the
+// tree-indented bare name for a forked child — the parent row already shows
+// the dir) plus any #labels.
+func (m *Model) rowLabel(s claude.Session) string {
 	name := m.rowName(s)
 	if d := m.depth[s.SessionID]; d > 0 {
-		// Forked child: indent under its parent with a tree branch; drop the
-		// dirname/ prefix (the parent row already shows the dir).
 		name = strings.Repeat("  ", d-1) + "└─ " + m.displayName(s)
 	}
-	name += m.labelSuffix(s.SessionID)
+	return name + m.labelSuffix(s.SessionID)
+}
+
+// nameColWidth is the width of the row name column. With the preview pane on,
+// space is tight, so the column is capped and long names truncate; with it
+// off, the column stretches to the longest visible row label so every name
+// fits — bounded by width-18 so the status and age columns keep their room.
+func (m *Model) nameColWidth(width int) int {
+	if m.showPreview() {
+		return clamp(width-18, 18, 50)
+	}
+	longest := 0
+	for i := range m.view {
+		if n := len([]rune(m.rowLabel(m.view[i]))); n > longest {
+			longest = n
+		}
+	}
+	for _, g := range m.ghostParent { // ghost context rows share the column
+		if n := len([]rune(m.displayName(g))); n > longest {
+			longest = n
+		}
+	}
+	return clamp(longest, 18, width-18)
+}
+
+func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
+	st := m.statusOf(s)
+	nameW := m.nameColWidth(width)
+	name := m.rowLabel(s)
 	body := fmt.Sprintf("%-*s %-8s %4s",
 		nameW, truncate(name, nameW), statusLabelFor(st), humanAge(s.Started()))
 	avail := width - 4 // marker(2) + dot(1) + space(1)
@@ -370,7 +394,7 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 func (m *Model) ghostRowLine(s claude.Session, width int) string {
 	st := m.statusOf(s)
 	glyph, _ := statusGlyphStyle(st)
-	nameW := clamp(width-18, 18, 50)
+	nameW := m.nameColWidth(width)
 	body := fmt.Sprintf("%-*s %-8s", nameW, truncate(m.displayName(s), nameW), statusLabelFor(st))
 	body += "  ↑ main"
 	avail := width - 4
