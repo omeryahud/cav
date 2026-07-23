@@ -107,38 +107,40 @@ type (
 		childJobID string
 		parentSID  string
 		label      string
-		record     bool // true = fork (nest); false = clone (independent)
+		cloneName  string // clone only: the intended "copy-…" name ("" for a fork)
+		record     bool   // true = fork (nest); false = clone (independent)
 	}
 )
 
 // Model is the cav application state.
 type Model struct {
-	all          []claude.Session  // full list in display order
-	view         []claude.Session  // filtered/searched subset shown
-	roster       claude.Roster     // sessionId -> job id (attachable iff present)
-	states       map[string]string // sessionId -> job lifecycle state (working/done/blocked)
-	live         map[string]bool   // sessionId -> has a live daemon worker (else respawn to attach)
-	names        *names.Store      // cav-local display-name overrides
-	labels       *labels.Store     // cav-local searchable labels (L), shown as #tag on the row
-	dismissed    *dismiss.Store    // cav-local set of sessions hidden with d (survives restart)
-	forks        *forks.Store      // cav-local child-jobId -> parent-sessionId (fork tree)
-	unparked     *unpark.Store     // cav-local session IDs brought back to the main pane (b)
-	depth        map[string]int    // sessionId -> fork-tree depth (0 = top-level), set by recompute
+	all          []claude.Session          // full list in display order
+	view         []claude.Session          // filtered/searched subset shown
+	roster       claude.Roster             // sessionId -> job id (attachable iff present)
+	states       map[string]string         // sessionId -> job lifecycle state (working/done/blocked)
+	live         map[string]bool           // sessionId -> has a live daemon worker (else respawn to attach)
+	names        *names.Store              // cav-local display-name overrides
+	labels       *labels.Store             // cav-local searchable labels (L), shown as #tag on the row
+	dismissed    *dismiss.Store            // cav-local set of sessions hidden with d (survives restart)
+	forks        *forks.Store              // cav-local child-jobId -> parent-sessionId (fork tree)
+	unparked     *unpark.Store             // cav-local session IDs brought back to the main pane (b)
+	depth        map[string]int            // sessionId -> fork-tree depth (0 = top-level), set by recompute
 	ghostParent  map[string]claude.Session // (stopped view) first child of a ghost group -> its active parent, shown as a faint context row
-	groupMode    grouping          // none (alphabetical) | dir→status | status→dir (o cycles)
-	stoppedView  bool              // true: showing the stopped-sessions window (s toggles)
-	justStopped  map[string]bool   // just stopped from the main window; kept in the stopped window until reconciled
-	seen         *seen.Store       // persisted cache: sessionId -> last name seen (survives restart + transient drops)
+	groupMode    grouping                  // none (alphabetical) | dir→status | status→dir (o cycles)
+	stoppedView  bool                      // true: showing the stopped-sessions window (s toggles)
+	justStopped  map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
+	seen         *seen.Store               // persisted cache: sessionId -> last name seen (survives restart + transient drops)
 	cursor       int
 	mode         mode
 	input        textinput.Model
-	filter       string          // active metadata filter
-	matchIDs     map[string]bool // active deep-search result set (nil = inactive)
-	newCWD       string          // cwd for a pending new session
-	newName      string          // session name entered in the create wizard
-	newIsProject bool            // create wizard: N (make a new dir) vs n (existing dir)
-	selectJobID  string          // job id of a just-created session to highlight once it appears
-	pending      *claude.Session // session awaiting delete confirmation
+	filter       string            // active metadata filter
+	matchIDs     map[string]bool   // active deep-search result set (nil = inactive)
+	newCWD       string            // cwd for a pending new session
+	newName      string            // session name entered in the create wizard
+	newIsProject bool              // create wizard: N (make a new dir) vs n (existing dir)
+	selectJobID  string            // job id of a just-created session to highlight once it appears
+	pendingClone map[string]string // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
+	pending      *claude.Session   // session awaiting delete confirmation
 
 	// new-session directory picker
 	pickAll []string
@@ -171,21 +173,22 @@ func New(initialFilter string) (*Model, error) {
 	ti.CharLimit = 512
 	ti.Width = 60
 	return &Model{
-		filter:      initialFilter,
-		names:       names.Load(),
-		labels:      labels.Load(),
-		dismissed:   dismiss.Load(),
-		forks:       forks.Load(),
-		unparked:    unpark.Load(),
-		input:       ti,
-		mode:        modeList,
-		groupMode:   groupDirStatus,
-		previewOn:   true,
-		prevCache:   map[string]string{},
-		prevReq:     map[string]bool{},
-		states:      map[string]string{},
-		justStopped: map[string]bool{},
-		seen:        seen.Load(),
+		filter:       initialFilter,
+		names:        names.Load(),
+		labels:       labels.Load(),
+		dismissed:    dismiss.Load(),
+		forks:        forks.Load(),
+		unparked:     unpark.Load(),
+		input:        ti,
+		mode:         modeList,
+		groupMode:    groupDirStatus,
+		previewOn:    true,
+		prevCache:    map[string]string{},
+		prevReq:      map[string]bool{},
+		states:       map[string]string{},
+		justStopped:  map[string]bool{},
+		pendingClone: map[string]string{},
+		seen:         seen.Load(),
 	}, nil
 }
 
@@ -319,16 +322,17 @@ func createCmd(cwd, name, prompt string) tea.Cmd {
 
 // forkCmd forks (record=true) or clones (record=false) parentSID — either way a
 // new bg session continuing its conversation (see claude.Fork) — and reports the
-// child's job id so the UI can highlight it, plus (fork only) record the nest link.
-func forkCmd(parentSID, parentJobID, cwd, label string, record bool) tea.Cmd {
+// child's job id so the UI can highlight it, plus (fork only) record the nest
+// link. name is the clone's intended --name ("copy-…"); "" for a fork.
+func forkCmd(parentSID, parentJobID, cwd, label, name string, record bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
-		childJob, err := claude.Fork(ctx, parentSID, parentJobID, cwd)
+		childJob, err := claude.Fork(ctx, parentSID, parentJobID, cwd, name)
 		if err != nil {
 			return actionMsg{err: err}
 		}
-		return forkedMsg{childJobID: childJob, parentSID: parentSID, label: label, record: record}
+		return forkedMsg{childJobID: childJob, parentSID: parentSID, label: label, cloneName: name, record: record}
 	}
 }
 
@@ -668,6 +672,9 @@ func (m *Model) recompute() {
 		if m.isStopped(s) != m.stoppedView {
 			continue // main window shows active sessions; the stopped window shows stopped ones (s toggles)
 		}
+		if m.hiddenPendingClone(s) {
+			continue // a fresh clone not yet showing its "copy-…" name — hide the parent-name flash
+		}
 		v = append(v, s)
 	}
 	// The fuzzy filter only narrows the set; the active sort below still orders it
@@ -855,6 +862,18 @@ func (m *Model) isStopped(s claude.Session) bool {
 	}
 	return m.statusOf(s) == "stopped" || m.justStopped[s.SessionID] ||
 		(m.dismissed.Has(s.SessionID) && !hasLiveWorker(s))
+}
+
+// hiddenPendingClone reports whether s is a just-cloned session that hasn't yet
+// appeared under its intended "copy-…" name. A clone continues the parent's
+// conversation via --resume and so can momentarily surface with the parent's
+// name before the daemon settles on the --name we passed; hiding it until the
+// name matches keeps that flash out of the list. The pending entry is cleared
+// (in the refresh handler) once it does match, so a later user rename can't
+// re-trigger the hide.
+func (m *Model) hiddenPendingClone(s claude.Session) bool {
+	want, ok := m.pendingClone[m.roster[s.SessionID]]
+	return ok && m.displayName(s) != want
 }
 
 // countStopped returns how many sessions currently live in the stopped window.

@@ -295,9 +295,12 @@ func ResumeAttachCmd(jobID, title string) *exec.Cmd {
 // Fork starts a new background session that continues parentSessionID's
 // conversation under a fresh session id (`--bg --resume <id> --fork-session`),
 // reusing the parent job's cwd and respawn flags (read from its state.json, with
-// the parent's --name dropped so the fork isn't named identically). Returns the
-// new child's job id. The daemon records no parent link, so the caller tracks it.
-func Fork(ctx context.Context, parentSessionID, parentJobID, cwd string) (string, error) {
+// the parent's --name always dropped so the child isn't named identically).
+// When name is non-empty it's passed as the child's --name (clone → "copy-…");
+// empty leaves the child to inherit the parent's name via --resume (fork).
+// Returns the new child's job id. The daemon records no parent link, so the
+// caller tracks it.
+func Fork(ctx context.Context, parentSessionID, parentJobID, cwd, name string) (string, error) {
 	if parentSessionID == "" {
 		return "", fmt.Errorf("fork: no parent session id")
 	}
@@ -321,6 +324,9 @@ func Fork(ctx context.Context, parentSessionID, parentJobID, cwd string) (string
 		}
 	}
 	args := append([]string{"--bg", "--resume", parentSessionID, "--fork-session"}, flags...)
+	if name != "" {
+		args = append(args, "--name", name)
+	}
 	cmd := exec.CommandContext(ctx, Bin(), args...)
 	if cwd != "" {
 		cmd.Dir = cwd

@@ -267,7 +267,15 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 - **Clone** (`C`): same invocation as fork — a new background session continuing
   the highlighted session's conversation — but **independent**: no fork link is
   recorded, so it appears top-level, not nested (`forkedMsg.record` distinguishes
-  the two paths). Highlighted once it registers; rename with `R`.
+  the two paths). The clone is named **`copy-<original>`** — cav passes it as
+  `--name` on the `--bg` invocation (verified: `--name` takes effect alongside
+  `--fork-session`), so it's the real daemon name, not just a cav-local rename.
+  Because a clone continues the parent's conversation via `--resume`, it can
+  momentarily surface under the **parent's** inherited name before the daemon
+  settles on ours; cav **hides it until it appears as `copy-<original>`**
+  (`pendingClone` jobId→wanted-name, checked by `hiddenPendingClone` in
+  `recompute`, retired in the refresh handler once the name matches so a later
+  `R`-rename can't re-hide it). Highlighted once it appears named; `R` to rename.
 - **Labels** (`L`): free-form, space-separated tags per session, kept cav-locally
   (`internal/labels`, `~/.config/cav/labels.json`; empty input clears). They render
   at the end of the row as `#tag1 #tag2` (`labelSuffix`) and are part of the `/`

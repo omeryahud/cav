@@ -64,6 +64,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		// A clone (C) is hidden until it appears under its "copy-…" name; once it
+		// does, retire the pending entry so a later user rename can't re-hide it.
+		for i := range m.all {
+			jid := m.roster[m.all[i].SessionID]
+			if want, ok := m.pendingClone[jid]; ok && m.displayName(m.all[i]) == want {
+				delete(m.pendingClone, jid)
+			}
+		}
 		m.recompute()
 		// A just-created session (n/N) registers asynchronously; once it appears
 		// in the list, move the cursor to it (highlight it) instead of attaching.
@@ -135,7 +143,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = "forked " + msg.label
 		} else {
-			m.status = "cloned " + msg.label
+			// Clone: hide it until it appears under its "copy-…" name (no flash of
+			// the parent's inherited name), then highlight it like a fork/create.
+			m.pendingClone[msg.childJobID] = msg.cloneName
+			m.status = "cloned " + msg.cloneName
 		}
 		m.selectJobID = msg.childJobID
 		return m, nil
@@ -235,14 +246,16 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// conversation, nested under it in the list.
 		if s := m.current(); s != nil {
 			m.status = "forking " + m.displayName(*s) + "…"
-			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), true)
+			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), "", true)
 		}
 	case "C":
 		// Clone the highlighted session: same as fork — a new bg session continuing
-		// its conversation — but independent (top-level), not nested under it.
+		// its conversation — but independent (top-level), not nested under it, and
+		// named "copy-<original>". It stays hidden until it shows that name.
 		if s := m.current(); s != nil {
-			m.status = "cloning " + m.displayName(*s) + "…"
-			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), false)
+			name := "copy-" + m.displayName(*s)
+			m.status = "cloning " + m.displayName(*s) + " → " + name + "…"
+			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), name, false)
 		}
 	case "L":
 		// Edit the highlighted session's labels (space-separated tags; empty clears).
