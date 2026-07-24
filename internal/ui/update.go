@@ -118,6 +118,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if msg.note != "" {
 			m.status, m.err = msg.note, nil
 		}
+		if msg.selectJob != "" {
+			// e.g. stepping out of a session — re-highlight it once the next refresh
+			// places it (the list may have reordered while attached), via the same
+			// selectJobID path create/fork/clone use.
+			m.selectJobID = msg.selectJob
+		}
 		return m, nil // the background loop refreshes continuously
 
 	case searchDoneMsg:
@@ -376,7 +382,10 @@ func (m *Model) openCurrent() tea.Cmd {
 		note = "↩ resumed " + label
 	}
 	return tea.ExecProcess(cmd, func(error) tea.Msg {
-		return actionMsg{note: note}
+		// Highlight the session we just stepped out of: hold its job id (not the
+		// list index, which drifts as the list reorders — attaching flips it busy,
+		// resuming forces cursor 0) and let the next refresh move the cursor to it.
+		return actionMsg{note: note, selectJob: id}
 	})
 }
 

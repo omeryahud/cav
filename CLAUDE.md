@@ -213,6 +213,12 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   - **Live worker** → hands the current terminal to `claude attach <jobId>` via
     `tea.ExecProcess`; on exit, cav resumes in place. You can't attach to a session
     already attached elsewhere (e.g. the one you're typing in).
+  - **Stepping out re-highlights that session.** `openCurrent`'s exit callback
+    returns `actionMsg{selectJob: jobId}`, which sets `selectJobID` so the next
+    refresh moves the cursor onto the session you left — by **job id**, not the
+    old list index, which drifts (attaching flips the session busy, so it
+    reorders; resuming a stopped one forces cursor 0). Same mechanism
+    create/fork/clone use to highlight a new session once it appears.
   - **No live worker** (stopped / done / sleep-dropped — the daemon has released
     the job, so bare `claude attach` errors with "No job matching") → opened with
     `ResumeAttachCmd`: `claude respawn <jobId> && claude attach <jobId>`. `respawn`

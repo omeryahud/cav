@@ -80,8 +80,9 @@ type (
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
-		note string
-		err  error
+		note      string
+		err       error
+		selectJob string // job id to re-highlight once it next appears (e.g. after stepping out of a session)
 	}
 	searchDoneMsg struct {
 		q   string
