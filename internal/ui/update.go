@@ -217,7 +217,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgdown":
 		m.scrollPreview(-max(1, m.previewBodyHeight()-1))
 	case "o":
-		m.groupMode = (m.groupMode + 1) % 3 // cycle: none → dir→status → status→dir
+		m.groupMode = (m.groupMode + 1) % 4 // cycle: none → dir→status → status→dir → recent
 		m.recompute()
 	case "s":
 		m.stoppedView = !m.stoppedView
@@ -364,6 +364,10 @@ func (m *Model) openCurrent() tea.Cmd {
 	}
 	id, label := m.jobID(s), m.displayName(*s) // attach by job id, not session id
 	note := "← back from " + label
+	// Stamp the entry time (cav-local) so the recently-entered sort can order by it.
+	if err := m.entered.Mark(s.SessionID); err != nil {
+		m.err = err
+	}
 	// A live worker attaches directly. A stopped or sleep-dropped session has no
 	// live worker — the daemon has released the job, so `claude attach` alone
 	// errors ("job not found" / "not known to the daemon"). Respawn it first

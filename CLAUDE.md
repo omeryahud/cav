@@ -55,6 +55,7 @@ after.
 - `internal/dismiss/` — cav-local set of sessions hidden with `d` (`~/.config/cav/dismissed.json`).
 - `internal/forks/` — cav-local fork tree: forked child's jobId → parent sessionId (`~/.config/cav/forks.json`).
 - `internal/unpark/` — cav-local set of stopped sessions brought back to the main pane with `b` (`~/.config/cav/unparked.json`).
+- `internal/entered/` — cav-local record of when each session was last opened from cav, backing the recently-entered sort (`~/.config/cav/entered.json`).
 - `internal/seen/` — persisted cache of the last name seen per session, so names survive restart + transient daemon drops (`~/.config/cav/seen.json`).
 - `internal/dirs/` — portable directory candidates for the "new session" picker.
 - `internal/preview/` — transcript snippet extraction for the markdown preview
@@ -140,12 +141,19 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 
 ## UI behavior
 
-- **Grouping** (`o` cycles three `groupMode`s): **dir→status** (default; by cwd,
-  then status) → **status→dir** (by status, then cwd) → **none** (alphabetical).
+- **Grouping** (`o` cycles four `groupMode`s): **dir→status** (default; by cwd,
+  then status) → **status→dir** (by status, then cwd) → **recent** (flat, most
+  recently entered first) → **none** (flat, alphabetical).
   A directory header is the **name** (bold) with the **full path faint on its own
   line**; a status header is the color-coded bucket label. Whichever key is the
-  *secondary* one is shown indented under the primary. The active non-default mode
-  shows in the header (`group:status→dir` / `alphabetical`). Rows show
+  *secondary* one is shown indented under the primary. Only the two dir/status
+  modes draw headers (`grouping.grouped()`); the flat modes render a plain list
+  via `flatVisual`. **Recent** orders by the cav-local last-entered timestamp
+  (`internal/entered`, stamped in `openCurrent` when you open a session, so it
+  reflects when *you* stepped in — nothing on disk records that); sessions never
+  entered have no timestamp and sort last, alphabetically among themselves.
+  The active non-default mode shows in the header (`group:status→dir` /
+  `recently entered` / `alphabetical`). Rows show
   **dirname/name · status · age** — the cwd's leaf dir is prefixed onto every
   session name (`rowName`, a display-only decoration computed from the cwd, so it
   applies to all sessions and isn't part of the editable rename) — no conversation
@@ -292,7 +300,7 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   `L` label (searchable `#tags`) · `F` fork (nests the child under the parent) ·
   `C` clone (independent copy, top-level) · `d` remove · `b` bring back (a
   stopped session to the main pane) · `l` logs ·
-  `o` group (cycle dir→status / status→dir / alphabetical) ·
+  `o` group (cycle dir→status / status→dir / recently-entered / alphabetical) ·
   `s` stopped-window toggle · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
   scroll preview · `/` filter (metadata; **live fuzzy** — type to narrow
   (subsequence match; the dir/status grouping is kept), `↑/↓` (or `ctrl+j/k`)
@@ -316,6 +324,9 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   sessionId) so children nest under their parent in the list; undo by editing it.
 - `~/.config/cav/unparked.json` — cav-local set of stopped session IDs brought back
   to the main pane with `b` (overrides the stopped-window classification).
+- `~/.config/cav/entered.json` — sessionId → when you last opened that session from
+  cav (unix ms), stamped on open and loaded at startup; backs the `o`
+  recently-entered order. Nothing on disk records this, so it's cav-only.
 - `~/.config/cav/seen.json` — auto-populated cache of the last name seen per
   session (loaded on startup), so names don't blank to the short id on a transient
   daemon drop or a fresh launch. Distinct from names.json (user renames).

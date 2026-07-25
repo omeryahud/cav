@@ -179,6 +179,8 @@ func (m *Model) indicators() string {
 		parts = append(parts, "alphabetical")
 	case groupStatusDir:
 		parts = append(parts, "group:status→dir")
+	case groupRecent:
+		parts = append(parts, "recently entered")
 	}
 	if m.stoppedView {
 		parts = append(parts, "s: back to active")
@@ -201,7 +203,7 @@ func (m *Model) listLines(h, width int) []string {
 	}
 	var vlines []string
 	var sel int
-	if m.groupMode != groupNone {
+	if m.groupMode.grouped() {
 		vlines, sel = m.groupedVisual(width)
 	} else {
 		vlines, sel = m.flatVisual(width)

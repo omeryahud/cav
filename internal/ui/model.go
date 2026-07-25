@@ -16,6 +16,7 @@ import (
 	"github.com/omeryahud/cav/internal/claude"
 	"github.com/omeryahud/cav/internal/dirs"
 	"github.com/omeryahud/cav/internal/dismiss"
+	"github.com/omeryahud/cav/internal/entered"
 	"github.com/omeryahud/cav/internal/forks"
 	"github.com/omeryahud/cav/internal/labels"
 	"github.com/omeryahud/cav/internal/names"
@@ -53,7 +54,12 @@ const (
 	groupNone      grouping = iota // ungrouped: a flat alphabetical list
 	groupDirStatus                 // by cwd, then status (the default)
 	groupStatusDir                 // by status, then cwd
+	groupRecent                    // ungrouped: a flat list, most recently entered first
 )
+
+// grouped reports whether the mode draws dir/status headers; the flat modes
+// (alphabetical, recently-entered) render as a plain list.
+func (g grouping) grouped() bool { return g == groupDirStatus || g == groupStatusDir }
 
 type mode int
 
@@ -125,9 +131,10 @@ type Model struct {
 	dismissed    *dismiss.Store            // cav-local set of sessions hidden with d (survives restart)
 	forks        *forks.Store              // cav-local child-jobId -> parent-sessionId (fork tree)
 	unparked     *unpark.Store             // cav-local session IDs brought back to the main pane (b)
+	entered      *entered.Store            // cav-local sessionId -> last time it was opened (backs the recently-entered sort)
 	depth        map[string]int            // sessionId -> fork-tree depth (0 = top-level), set by recompute
 	ghostParent  map[string]claude.Session // (stopped view) first child of a ghost group -> its active parent, shown as a faint context row
-	groupMode    grouping                  // none (alphabetical) | dir→status | status→dir (o cycles)
+	groupMode    grouping                  // none (alphabetical) | dir→status | status→dir | recent (o cycles)
 	stoppedView  bool                      // true: showing the stopped-sessions window (s toggles)
 	justStopped  map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
 	seen         *seen.Store               // persisted cache: sessionId -> last name seen (survives restart + transient drops)
@@ -180,6 +187,7 @@ func New(initialFilter string) (*Model, error) {
 		dismissed:    dismiss.Load(),
 		forks:        forks.Load(),
 		unparked:     unpark.Load(),
+		entered:      entered.Load(),
 		input:        ti,
 		mode:         modeList,
 		groupMode:    groupDirStatus,
@@ -708,6 +716,21 @@ func (m *Model) recompute() {
 		// Ungrouped: a flat, case-insensitive alphabetical list by the displayed
 		// label (dirname/name).
 		sort.SliceStable(v, func(i, j int) bool {
+			ni, nj := strings.ToLower(m.rowName(v[i])), strings.ToLower(m.rowName(v[j]))
+			if ni != nj {
+				return ni < nj
+			}
+			return v[i].SessionID < v[j].SessionID
+		})
+	case groupRecent:
+		// Ungrouped: most recently entered (opened from cav) first. Sessions never
+		// entered have no timestamp, so they sort after every entered one, among
+		// themselves alphabetically — the same order groupNone would give them.
+		sort.SliceStable(v, func(i, j int) bool {
+			ai, aj := m.entered.At(v[i].SessionID), m.entered.At(v[j].SessionID)
+			if ai != aj {
+				return ai > aj
+			}
 			ni, nj := strings.ToLower(m.rowName(v[i])), strings.ToLower(m.rowName(v[j]))
 			if ni != nj {
 				return ni < nj
