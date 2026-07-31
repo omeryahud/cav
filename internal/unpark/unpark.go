@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/omeryahud/cav/internal/config"
 )
 
 // Store is a persisted set of session IDs forced into the main pane.
@@ -19,17 +21,9 @@ type Store struct {
 	m    map[string]bool
 }
 
-func configDir() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "cav")
-	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "cav")
-}
-
 // Load reads unparked.json (missing file = empty set).
 func Load() *Store {
-	s := &Store{path: filepath.Join(configDir(), "unparked.json"), m: map[string]bool{}}
+	s := &Store{path: filepath.Join(config.Dir(), "unparked.json"), m: map[string]bool{}}
 	if b, err := os.ReadFile(s.path); err == nil {
 		var ids []string
 		if json.Unmarshal(b, &ids) == nil {

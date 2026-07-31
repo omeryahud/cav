@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/omeryahud/cav/internal/config"
 )
 
 // Store maps sessionId -> last-entered time (unix milliseconds), backed by a
@@ -18,17 +20,9 @@ type Store struct {
 	m    map[string]int64
 }
 
-func configDir() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "cav")
-	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "cav")
-}
-
 // Load reads entered.json (missing file = empty store).
 func Load() *Store {
-	s := &Store{path: filepath.Join(configDir(), "entered.json"), m: map[string]int64{}}
+	s := &Store{path: filepath.Join(config.Dir(), "entered.json"), m: map[string]int64{}}
 	if b, err := os.ReadFile(s.path); err == nil {
 		_ = json.Unmarshal(b, &s.m)
 	}

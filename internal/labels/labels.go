@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/omeryahud/cav/internal/config"
 )
 
 // Store maps sessionId -> label text (space-separated tags).
@@ -15,17 +17,9 @@ type Store struct {
 	m    map[string]string
 }
 
-func configDir() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "cav")
-	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "cav")
-}
-
 // Load reads labels.json (missing file = empty store).
 func Load() *Store {
-	s := &Store{path: filepath.Join(configDir(), "labels.json"), m: map[string]string{}}
+	s := &Store{path: filepath.Join(config.Dir(), "labels.json"), m: map[string]string{}}
 	if b, err := os.ReadFile(s.path); err == nil {
 		_ = json.Unmarshal(b, &s.m)
 	}

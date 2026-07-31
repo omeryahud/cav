@@ -25,11 +25,6 @@ const (
 
 const styleMask = attrReverse | attrUnderline | attrBold | attrItalic
 
-// maxBytes caps how much trailing output we emulate, to bound parse time on a
-// large dump. The stream is full-screen redraws, so a tail still converges to
-// the current screen.
-const maxBytes = 256 << 10
-
 // Render reconstructs the session screen and returns it as styled ANSI lines,
 // line-wrapped to wrapWidth so no horizontal content is lost.
 //
@@ -37,9 +32,13 @@ const maxBytes = 256 << 10
 // terminal size, or its pre-wrapped lines re-wrap and garble. Each non-empty row
 // is then re-flowed into wrapWidth-wide segments. The result can be taller than
 // the pane; the caller bottom-anchors and clips it to the latest content.
-func Render(raw []byte, emuCols, emuRows, wrapWidth int) string {
+//
+// maxBytes caps how much trailing output is emulated, to bound parse time on a
+// large dump. The stream is full-screen redraws, so a tail still converges to
+// the current screen.
+func Render(raw []byte, emuCols, emuRows, wrapWidth, maxBytes int) string {
 	emuCols, emuRows, wrapWidth = max(emuCols, 1), max(emuRows, 1), max(wrapWidth, 1)
-	if len(raw) > maxBytes {
+	if maxBytes > 0 && len(raw) > maxBytes {
 		raw = raw[len(raw)-maxBytes:]
 	}
 	term := vt10x.New(vt10x.WithSize(emuCols, emuRows))

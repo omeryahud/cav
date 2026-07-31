@@ -35,7 +35,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusSeen = time.Time{}
 		case m.status != m.statusPrev:
 			m.statusPrev, m.statusSeen = m.status, time.Now()
-		case time.Since(m.statusSeen) > statusTTL:
+		case time.Since(m.statusSeen) > m.cfg.List.StatusTTL:
 			m.status, m.statusPrev = "", ""
 		}
 		// Remember each session's name (persisted) so a later refresh that
@@ -88,7 +88,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// immediately via ensurePreview).
 		cmds := []tea.Cmd{waitRefresh(m.refreshes)}
 		if m.showPreview() {
-			if s := m.current(); s != nil && time.Since(m.prevAt) >= previewRefresh {
+			if s := m.current(); s != nil && time.Since(m.prevAt) >= m.cfg.Preview.Refresh {
 				m.prevAt = time.Now()
 				m.prevReq[s.SessionID] = true
 				cmds = append(cmds, m.previewCmdFor(s))
@@ -252,7 +252,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// conversation, nested under it in the list.
 		if s := m.current(); s != nil {
 			m.status = "forking " + m.displayName(*s) + "…"
-			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), "", true)
+			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), "", true, m.cfg.Timeouts.Command)
 		}
 	case "C":
 		// Clone the highlighted session: same as fork — a new bg session continuing
@@ -261,7 +261,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s := m.current(); s != nil {
 			name := "copy-" + m.displayName(*s)
 			m.status = "cloning " + m.displayName(*s) + " → " + name + "…"
-			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), name, false)
+			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), name, false, m.cfg.Timeouts.Command)
 		}
 	case "L":
 		// Edit the highlighted session's labels (space-separated tags; empty clears).
@@ -303,11 +303,11 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.SetValue("")
 		m.input.Placeholder = "fuzzy-find a directory…"
 		m.status = "loading directories…"
-		return m, tea.Batch(m.input.Focus(), dirsCmd())
+		return m, tea.Batch(m.input.Focus(), dirsCmd(m.cfg.Picker.MaxDepth))
 	case "N":
 		m.mode = modeNewProject
 		m.input.SetValue("")
-		m.input.Placeholder = "new project name (creates " + homeShorten(projectRoot()) + "/<name>)…"
+		m.input.Placeholder = "new project name (creates " + homeShorten(m.cfg.ProjectRoot) + "/<name>)…"
 		return m, m.input.Focus()
 	case "d":
 		s := m.current()
@@ -466,10 +466,10 @@ func (m *Model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Blur()
 		if m.newIsProject {
 			m.status = "creating project…"
-			return m, newProjectCmd(m.newCWD, m.newName, prompt)
+			return m, newProjectCmd(m.newCWD, m.newName, prompt, m.cfg.ProjectRoot, m.cfg.Timeouts.Command)
 		}
 		m.status = "creating session…"
-		return m, createCmd(m.newCWD, m.newName, prompt)
+		return m, createCmd(m.newCWD, m.newName, prompt, m.cfg.Timeouts.Command)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -511,7 +511,7 @@ func (m *Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Blur()
 			return m, nil
 		}
-		m.newCWD = filepath.Join(projectRoot(), project)
+		m.newCWD = filepath.Join(m.cfg.ProjectRoot, project)
 		m.newIsProject = true
 		m.mode = modeNewName
 		m.input.SetValue(filepath.Base(m.newCWD)) // default session name = the new dir's name

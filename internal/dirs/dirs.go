@@ -12,11 +12,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-)
 
-// maxDepth bounds how deep below a root we descend (keeps the walk fast and
-// the candidate list manageable even under large trees).
-const maxDepth = 8
+	"github.com/omeryahud/cav/internal/config"
+)
 
 var excluded = map[string]bool{
 	".git": true, "node_modules": true, ".cache": true, "Library": true,
@@ -28,12 +26,13 @@ var excluded = map[string]bool{
 }
 
 // Candidates returns the roots plus their descendant directories, sorted and
-// de-duplicated.
-func Candidates() []string {
+// de-duplicated. maxDepth bounds how deep below a root the walk descends,
+// keeping it fast and the list manageable under large trees.
+func Candidates(maxDepth int) []string {
 	set := map[string]struct{}{}
 	for _, r := range roots() {
 		set[r] = struct{}{}
-		walk(r, set)
+		walk(r, maxDepth, set)
 	}
 	out := make([]string, 0, len(set))
 	for d := range set {
@@ -43,13 +42,7 @@ func Candidates() []string {
 	return out
 }
 
-func configRootsFile() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "cav", "roots.txt")
-	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "cav", "roots.txt")
-}
+func configRootsFile() string { return filepath.Join(config.Dir(), "roots.txt") }
 
 // roots returns the directories to scan: cav's configured roots (or, if none,
 // the usual dev locations) plus the user's cdf roots (see cdfRoots), with $HOME
@@ -142,7 +135,7 @@ func isDir(p string) bool {
 	return err == nil && fi.IsDir()
 }
 
-func walk(root string, set map[string]struct{}) {
+func walk(root string, maxDepth int, set map[string]struct{}) {
 	base := strings.Count(filepath.Clean(root), string(os.PathSeparator))
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

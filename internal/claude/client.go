@@ -126,12 +126,23 @@ func ScanJobs() []JobRecord {
 	return out
 }
 
-// Bin is the claude executable name; override with $CLAUDE_BIN.
+// bin is the claude executable, set from config at startup by SetBin.
+var bin = "claude"
+
+// SetBin points cav at a claude executable (config's claudeBin). $CLAUDE_BIN
+// still wins over it, so a one-off override works without editing the config.
+func SetBin(path string) {
+	if path != "" {
+		bin = path
+	}
+}
+
+// Bin is the claude executable name; $CLAUDE_BIN overrides the configured one.
 func Bin() string {
 	if b := os.Getenv("CLAUDE_BIN"); b != "" {
 		return b
 	}
-	return "claude"
+	return bin
 }
 
 // List returns current sessions from `claude agents --json`.

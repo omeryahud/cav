@@ -50,6 +50,9 @@ after.
   - `update.go` — `Update` + per-mode key handlers.
   - `view.go` — layout + rendering, Lip Gloss styles, and `renderSnippets`
     (markdown → ANSI via glamour).
+- `internal/config/` — all tunable settings, loaded from `~/.config/cav/config.json`
+  (defaults = the old compile-time constants); also owns `config.Dir()`, the one
+  place that resolves the XDG-aware config directory for every store below.
 - `internal/names/` — cav-local rename overrides (`~/.config/cav/names.json`).
 - `internal/labels/` — cav-local searchable per-session labels, edited with `L` (`~/.config/cav/labels.json`).
 - `internal/dismiss/` — cav-local set of sessions hidden with `d` (`~/.config/cav/dismissed.json`).
@@ -312,6 +315,40 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 
 ## Config files
 
+- `~/.config/cav/config.json` — **all of cav's tunables** (`internal/config`).
+  Entirely optional and every key is optional: with no file, cav behaves exactly
+  as it did when these were compile-time constants (a regression test asserts the
+  rendered frame is byte-identical), so the file only needs the knobs you change.
+  Values are validated and clamped; anything rejected keeps its default and is
+  named in a footer warning — a malformed file never blocks startup, since a
+  stray comma shouldn't lock you out of a TUI. Loaded once at startup.
+
+  | key | default | what it does |
+  |---|---|---|
+  | `projectRoot` | `~/go/src/github.com/omeryahud` | where `N` creates projects — and the only place it may (`validProjectPath`). `~`/`$VAR` expanded; must be absolute |
+  | `claudeBin` | `claude` | the claude executable (`$CLAUDE_BIN` still overrides it) |
+  | `preview.minWidth` | 100 | hide the preview pane below this terminal width |
+  | `preview.widthPercent` | 50 | pane width as a % of the terminal (10–90) |
+  | `preview.emuCols` / `emuRows` | 220 / 64 | emulated terminal size for a live session's screen (floors) |
+  | `preview.maxLogBytes` | 262144 | cap on trailing `claude logs` output emulated |
+  | `preview.refreshMs` | 2000 | throttle between background preview reloads |
+  | `preview.markdownStyle` | `dark` | glamour style for the non-live transcript view |
+  | `list.nameColMax` | 50 | name-column cap **when the preview is on** (off = fit the longest name) |
+  | `list.nameColReserve` | 18 | columns kept for the status/age columns |
+  | `list.statusTTLMs` | 6000 | how long a footer note lingers |
+  | `list.minRefreshMs` | 250 | floor between refreshes (guards a hot spin) |
+  | `picker.maxDepth` | 8 | how deep the dir-picker walk descends |
+  | `timeouts.commandMs` | 25000 | one-shot claude invocations (create/fork/clone) |
+  | `colors.*` | see below | the palette, by role |
+
+  **Colors** take an ANSI 256 index (`42`) or a hex string (`"#5fd700"`); text
+  attributes (bold/italic/faint) stay in code. Roles: `running` `waiting`
+  `error` `complete` `idle` `idleHeader` `dim` `help` `name` `accent`
+  `dirHeader` `dirPath` `statusHeader` `titleFg` `titleBg` `selectionBg`
+  `userLabel` `assistantLabel`. A role drives both a status dot and its bucket
+  header, so the two can't drift apart (`applyPalette` in `view.go` rebuilds
+  every style from it). Roles are independent even where defaults coincide
+  (`idle`/`dim` are both 244), so retheming one never disturbs another.
 - `~/.config/cav/names.json` — cav-local rename overrides (the `claude` CLI has
   no rename verb and the daemon name isn't writable, so renames are cav-only).
 - `~/.config/cav/labels.json` — cav-local per-session labels (`L`; space-separated
@@ -345,9 +382,9 @@ Both create flows are a small wizard — **session name, then an initial prompt*
 (both optional, in that order) — and then they create the session and
 **highlight it in the list** (move the cursor to it) rather than attaching:
 - `n` (new session): fuzzy-pick an existing directory, then name → prompt.
-- `N` (**new project**): type a name → cav makes
-  `~/go/src/github.com/omeryahud/<name>` → session name (defaults to that dir) →
-  prompt (empty = idle).
+- `N` (**new project**): type a name → cav makes `<projectRoot>/<name>`
+  (`config.json`'s `projectRoot`, default `~/go/src/github.com/omeryahud`) →
+  session name (defaults to that dir) → prompt (empty = idle).
 
 `claude.Create` parses the new job id out of `claude --bg`'s output
 (`backgrounded · <id> …`); a new session registers with the daemon
@@ -362,4 +399,8 @@ it, ~0.5s).
 - All `claude`-CLI and on-disk-state access goes through `internal/claude` — keep
   it there.
 - `Date.now`-style nondeterminism is fine here (normal Go binary, not a sandbox).
-- Override the claude binary for testing with `$CLAUDE_BIN`.
+- Override the claude binary for testing with `$CLAUDE_BIN` (it wins over
+  `config.json`'s `claudeBin`, so a one-off override needs no file edit).
+- Tunables belong in `internal/config`, not as new constants — and their
+  defaults must preserve current behavior, since a missing config.json is
+  expected to render identically.

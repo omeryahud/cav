@@ -12,43 +12,82 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/omeryahud/cav/internal/claude"
+	"github.com/omeryahud/cav/internal/config"
 	"github.com/omeryahud/cav/internal/preview"
 )
 
+// The palette is applied once at startup from config (applyPalette), so every
+// render site can keep using these styles by name. Text attributes (bold,
+// italic, faint) stay fixed here — only the colors are configurable.
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("254")).Background(lipgloss.Color("238")).Padding(0, 1)
-	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	nameStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	selName     = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
-	selBg       = lipgloss.Color("238") // background for the highlighted (selected) row
-	workDot     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	idleDot     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	warnDot     = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	helpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	hintStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	cwdHeader   = lipgloss.NewStyle().Foreground(lipgloss.Color("147")).Bold(true)
-	cwdPath     = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Faint(true) // "smaller" = faint
-	statHeader  = lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Italic(true)
+	titleStyle  lipgloss.Style
+	cursorStyle lipgloss.Style
+	dimStyle    lipgloss.Style
+	nameStyle   lipgloss.Style
+	selName     lipgloss.Style
+	selBg       lipgloss.Color // background for the highlighted (selected) row
+	workDot     lipgloss.Style
+	idleDot     lipgloss.Style
+	warnDot     lipgloss.Style
+	errStyle    lipgloss.Style
+	helpStyle   lipgloss.Style
+	hintStyle   lipgloss.Style
+	cwdHeader   lipgloss.Style
+	cwdPath     lipgloss.Style // "smaller" = faint
+	statHeader  lipgloss.Style
 
-	// status dot + sub-header colors (kept in sync)
-	doneDot = lipgloss.NewStyle().Foreground(lipgloss.Color("44"))               // complete ✓
-	runHdr  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Italic(true)  // running
-	waitHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Italic(true) // waiting for input
-	errHdr  = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Italic(true) // error
-	idleHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true) // idle
-	doneHdr = lipgloss.NewStyle().Foreground(lipgloss.Color("44")).Italic(true)  // complete
+	// status dot + sub-header colors (kept in sync by sharing a palette role)
+	doneDot lipgloss.Style // complete ✓
+	runHdr  lipgloss.Style // running
+	waitHdr lipgloss.Style // waiting for input
+	errHdr  lipgloss.Style // error
+	idleHdr lipgloss.Style // idle
+	doneHdr lipgloss.Style // complete
 
 	// preview role labels (user vs assistant); message bodies are markdown-rendered
-	userLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	asstLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("147")).Bold(true)
+	userLabel lipgloss.Style
+	asstLabel lipgloss.Style
 )
+
+// Styles exist before New runs (tests, and any render before the model loads).
+func init() { applyPalette(config.Defaults().Colors) }
+
+// applyPalette rebuilds every style from the configured colors. A role drives
+// both a status dot and its bucket header, so the two can't drift apart.
+func applyPalette(c config.Colors) {
+	fg := func(s string) lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(s)) }
+	titleStyle = lipgloss.NewStyle().Bold(true).
+		Foreground(lipgloss.Color(c.TitleFg)).Background(lipgloss.Color(c.TitleBg)).Padding(0, 1)
+	cursorStyle = fg(c.Accent).Bold(true)
+	dimStyle = fg(c.Dim)
+	nameStyle = fg(c.Name)
+	selName = fg(c.Accent).Bold(true)
+	selBg = lipgloss.Color(c.SelectionBg)
+	workDot = fg(c.Running)
+	idleDot = fg(c.Idle)
+	warnDot = fg(c.Waiting)
+	errStyle = fg(c.Error)
+	helpStyle = fg(c.Help)
+	hintStyle = fg(c.Accent)
+	cwdHeader = fg(c.DirHeader).Bold(true)
+	cwdPath = fg(c.DirPath).Faint(true)
+	statHeader = fg(c.StatusHeader).Italic(true)
+
+	doneDot = fg(c.Complete)
+	runHdr = fg(c.Running).Italic(true)
+	waitHdr = fg(c.Waiting).Italic(true)
+	errHdr = fg(c.Error).Italic(true)
+	idleHdr = fg(c.IdleHeader).Italic(true)
+	doneHdr = fg(c.Complete).Italic(true)
+
+	userLabel = fg(c.UserLabel).Bold(true)
+	asstLabel = fg(c.AssistantLabel).Bold(true)
+}
 
 // renderSnippets renders the recent conversation: a color-coded role label per
 // message followed by its body rendered from markdown to ANSI (via glamour),
 // wrapped to width. Done once at load time (async), not per frame.
-func renderSnippets(snips []preview.Snippet, width int) string {
+func renderSnippets(snips []preview.Snippet, width int, style string) string {
 	if len(snips) == 0 {
 		return ""
 	}
@@ -56,7 +95,7 @@ func renderSnippets(snips []preview.Snippet, width int) string {
 		width = 10
 	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle("dark"),
+		glamour.WithStandardStyle(style),
 		glamour.WithWordWrap(width),
 	)
 	var b strings.Builder
@@ -187,7 +226,7 @@ func (m *Model) indicators() string {
 	} else if n := m.countStopped(); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d stopped (s)", n))
 	}
-	if m.previewOn && m.width < previewMinWidth {
+	if m.previewOn && m.width < m.cfg.Preview.MinWidth {
 		parts = append(parts, "preview:too-narrow")
 	}
 	return strings.Join(parts, "  ")
@@ -342,7 +381,7 @@ func (m *Model) rowLabel(s claude.Session) string {
 // fits — bounded by width-18 so the status and age columns keep their room.
 func (m *Model) nameColWidth(width int) int {
 	if m.showPreview() {
-		return clamp(width-18, 18, 50)
+		return clamp(width-m.cfg.List.NameColReserve, 18, m.cfg.List.NameColMax)
 	}
 	longest := 0
 	for i := range m.view {
@@ -355,7 +394,7 @@ func (m *Model) nameColWidth(width int) int {
 			longest = n
 		}
 	}
-	return clamp(longest, 18, width-18)
+	return clamp(longest, 18, width-m.cfg.List.NameColReserve)
 }
 
 func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {

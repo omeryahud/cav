@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/omeryahud/cav/internal/config"
 )
 
 // Store holds the set of dismissed session IDs backed by a JSON file.
@@ -20,17 +22,9 @@ type Store struct {
 	m    map[string]bool
 }
 
-func configDir() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "cav")
-	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "cav")
-}
-
 // Load reads dismissed.json (missing file = empty store).
 func Load() *Store {
-	s := &Store{path: filepath.Join(configDir(), "dismissed.json"), m: map[string]bool{}}
+	s := &Store{path: filepath.Join(config.Dir(), "dismissed.json"), m: map[string]bool{}}
 	if b, err := os.ReadFile(s.path); err == nil {
 		var ids []string
 		if json.Unmarshal(b, &ids) == nil {

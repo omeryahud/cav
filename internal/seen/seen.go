@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/omeryahud/cav/internal/config"
 )
 
 // Store maps sessionId -> last non-empty name seen, backed by a JSON file.
@@ -18,17 +20,9 @@ type Store struct {
 	dirty bool
 }
 
-func configDir() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "cav")
-	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".config", "cav")
-}
-
 // Load reads seen.json (missing file = empty store).
 func Load() *Store {
-	s := &Store{path: filepath.Join(configDir(), "seen.json"), m: map[string]string{}}
+	s := &Store{path: filepath.Join(config.Dir(), "seen.json"), m: map[string]string{}}
 	if b, err := os.ReadFile(s.path); err == nil {
 		_ = json.Unmarshal(b, &s.m)
 	}

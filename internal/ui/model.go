@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/omeryahud/cav/internal/claude"
+	"github.com/omeryahud/cav/internal/config"
 	"github.com/omeryahud/cav/internal/dirs"
 	"github.com/omeryahud/cav/internal/dismiss"
 	"github.com/omeryahud/cav/internal/entered"
@@ -27,24 +28,8 @@ import (
 	"github.com/omeryahud/cav/internal/unpark"
 )
 
-// previewMinWidth is the terminal width below which the preview pane is hidden.
-const previewMinWidth = 100
-
-// Size the live-session terminal emulator generously — it must be >= the
-// session's own terminal so its pre-wrapped lines don't re-wrap; the screen is
-// then cropped to the (smaller) preview pane.
-const (
-	previewEmuCols = 220
-	previewEmuRows = 64
-)
-
-// previewRefresh throttles background preview reloads (claude logs is ~0.5s) now
-// that the list refreshes continuously; a selection change loads immediately.
-const previewRefresh = 2 * time.Second
-
-// statusTTL is how long a footer status note lingers before the refresh loop
-// clears it (errors are kept until the user acts).
-const statusTTL = 6 * time.Second
+// Every knob these once hard-coded now lives in config (~/.config/cav/config.json);
+// the defaults there are exactly the values that used to sit here.
 
 // grouping is how the session list is organized; the o key cycles through these
 // in order.
@@ -137,6 +122,7 @@ type Model struct {
 	groupMode    grouping                  // none (alphabetical) | dir→status | status→dir | recent (o cycles)
 	stoppedView  bool                      // true: showing the stopped-sessions window (s toggles)
 	justStopped  map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
+	cfg          config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
 	seen         *seen.Store               // persisted cache: sessionId -> last name seen (survives restart + transient drops)
 	cursor       int
 	mode         mode
@@ -180,7 +166,14 @@ func New(initialFilter string) (*Model, error) {
 	ti.Prompt = ""
 	ti.CharLimit = 512
 	ti.Width = 60
+	// A bad config never blocks startup: Load always returns a usable Config, and
+	// the problem is surfaced in the footer instead (see cfgErr below).
+	cfg, cfgErr := config.Load()
+	claude.SetBin(cfg.ClaudeBin)
+	applyPalette(cfg.Colors)
 	return &Model{
+		cfg:          cfg,
+		err:          cfgErr,
 		filter:       initialFilter,
 		names:        names.Load(),
 		labels:       labels.Load(),
@@ -204,7 +197,7 @@ func New(initialFilter string) (*Model, error) {
 // Init starts the background refresh loop and begins consuming its results.
 func (m *Model) Init() tea.Cmd {
 	m.refreshes = make(chan refreshResult)
-	go refreshLoop(m.refreshes)
+	go refreshLoop(m.refreshes, m.cfg.List.MinRefresh)
 	return waitRefresh(m.refreshes)
 }
 
@@ -286,8 +279,7 @@ func doRefresh() refreshResult {
 // refresh completes (~0.5s, bounded by `claude agents --json`). minRefresh is a
 // small floor that only matters if a refresh returns very fast (e.g. the daemon
 // is down), to avoid a hot spin.
-func refreshLoop(ch chan<- refreshResult) {
-	const minRefresh = 250 * time.Millisecond
+func refreshLoop(ch chan<- refreshResult, minRefresh time.Duration) {
 	for {
 		start := time.Now()
 		rr := doRefresh()
@@ -313,9 +305,9 @@ func searchCmd(q string) tea.Cmd {
 	}
 }
 
-func createCmd(cwd, name, prompt string) tea.Cmd {
+func createCmd(cwd, name, prompt string, timeout time.Duration) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		jobID, err := claude.Create(ctx, cwd, name, prompt)
 		if err != nil {
@@ -333,9 +325,9 @@ func createCmd(cwd, name, prompt string) tea.Cmd {
 // new bg session continuing its conversation (see claude.Fork) — and reports the
 // child's job id so the UI can highlight it, plus (fork only) record the nest
 // link. name is the clone's intended --name ("copy-…"); "" for a fork.
-func forkCmd(parentSID, parentJobID, cwd, label, name string, record bool) tea.Cmd {
+func forkCmd(parentSID, parentJobID, cwd, label, name string, record bool, timeout time.Duration) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		childJob, err := claude.Fork(ctx, parentSID, parentJobID, cwd, name)
 		if err != nil {
@@ -345,29 +337,33 @@ func forkCmd(parentSID, parentJobID, cwd, label, name string, record bool) tea.C
 	}
 }
 
-// projectRoot is where the "new project" shortcut (N) creates directories.
-func projectRoot() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "go", "src", "github.com", "omeryahud")
-}
-
 // newProjectCmd creates the directory cwd (which must be under projectRoot),
 // starts a background session in it named name (falling back to the dir's base
 // name) with an optional prompt, and asks the UI to open that session.
-func newProjectCmd(cwd, name, prompt string) tea.Cmd {
+// validProjectPath keeps N confined to the configured project root: cwd must be
+// the root itself or sit beneath it, so a crafted name can't escape via "..".
+func validProjectPath(cwd, root string) error {
+	root = filepath.Clean(root)
+	cwd = filepath.Clean(cwd)
+	if cwd != root && !strings.HasPrefix(cwd, root+string(os.PathSeparator)) {
+		return fmt.Errorf("invalid project path %q (outside %s)", cwd, root)
+	}
+	return nil
+}
+
+func newProjectCmd(cwd, name, prompt, root string, timeout time.Duration) tea.Cmd {
 	return func() tea.Msg {
-		root := projectRoot()
-		cwd = filepath.Clean(cwd)
-		if cwd != root && !strings.HasPrefix(cwd, root+string(os.PathSeparator)) {
-			return actionMsg{err: fmt.Errorf("invalid project path %q", cwd)}
+		if err := validProjectPath(cwd, root); err != nil {
+			return actionMsg{err: err}
 		}
+		cwd = filepath.Clean(cwd)
 		if err := os.MkdirAll(cwd, 0o755); err != nil {
 			return actionMsg{err: err}
 		}
 		if name == "" {
 			name = filepath.Base(cwd)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		jobID, err := claude.Create(ctx, cwd, name, prompt)
 		if err != nil {
@@ -377,24 +373,24 @@ func newProjectCmd(cwd, name, prompt string) tea.Cmd {
 	}
 }
 
-func dirsCmd() tea.Cmd {
-	return func() tea.Msg { return dirsMsg(dirs.Candidates()) }
+func dirsCmd(maxDepth int) tea.Cmd {
+	return func() tea.Msg { return dirsMsg(dirs.Candidates(maxDepth)) }
 }
 
 // previewCmd loads the preview for a session. For a session with a live worker
 // it shows the actual terminal screen (claude logs → emulated at width×height);
 // otherwise (and on any logs failure) it falls back to the transcript text.
-func previewCmd(id, jobID string, live bool, width, height int) tea.Cmd {
+func previewCmd(id, jobID string, live bool, width, height int, cfg config.Preview) tea.Cmd {
 	return func() tea.Msg {
 		if live && jobID != "" {
 			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 			defer cancel()
 			if raw, err := claude.Logs(ctx, jobID); err == nil && len(raw) > 0 {
-				emuCols, emuRows := max(width, previewEmuCols), max(height, previewEmuRows)
-				return previewMsg{id: id, text: termview.Render(raw, emuCols, emuRows, width)}
+				emuCols, emuRows := max(width, cfg.EmuCols), max(height, cfg.EmuRows)
+				return previewMsg{id: id, text: termview.Render(raw, emuCols, emuRows, width, cfg.MaxLogBytes)}
 			}
 		}
-		return previewMsg{id: id, text: renderSnippets(preview.Recent(id, 14), width)}
+		return previewMsg{id: id, text: renderSnippets(preview.Recent(id, 14), width, cfg.MarkdownStyle)}
 	}
 }
 
@@ -521,12 +517,12 @@ func (m *Model) labelSuffix(sid string) string {
 	return " #" + strings.Join(strings.Fields(l), " #")
 }
 
-func (m *Model) showPreview() bool { return m.previewOn && m.width >= previewMinWidth }
+func (m *Model) showPreview() bool { return m.previewOn && m.width >= m.cfg.Preview.MinWidth }
 
 // previewWidth is the column width used for the preview pane (and the wrap
 // width markdown is rendered at) — half the screen.
 func (m *Model) previewWidth() int {
-	return m.width / 2
+	return m.width * m.cfg.Preview.WidthPercent / 100
 }
 
 // midHeight is the height of the middle list/preview region (everything between
@@ -551,7 +547,7 @@ func (m *Model) previewBodyHeight() int {
 // previewCmdFor builds the preview load command for s, supplying the job id and
 // live-worker flag so previewCmd can choose the live-terminal or text path.
 func (m *Model) previewCmdFor(s *claude.Session) tea.Cmd {
-	return previewCmd(s.SessionID, m.jobID(s), hasLiveWorker(*s), m.previewWidth(), m.previewBodyHeight())
+	return previewCmd(s.SessionID, m.jobID(s), hasLiveWorker(*s), m.previewWidth(), m.previewBodyHeight(), m.cfg.Preview)
 }
 
 // ensurePreview lazily loads the selected session's transcript preview.
