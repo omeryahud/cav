@@ -509,6 +509,16 @@ func (m *Model) pickerLines(h, width int) []string {
 func (m *Model) footerBlock() string {
 	var status string
 	switch {
+	case m.mode == modeConfirm && m.pendingKill != "":
+		// Bulk power-save (z/Z). Counts render fresh each frame, so the prompt
+		// tracks the continuously-refreshing list.
+		targets := m.killTargets(m.pendingKill)
+		prompt := fmt.Sprintf("Stop %d idle session process(es)? (y/n — ↵ on a stopped session respawns it)", len(targets))
+		if m.pendingKill == "all" {
+			busy := len(targets) - len(m.killTargets("idle"))
+			prompt = fmt.Sprintf("Stop all %d session process(es)? (%d busy) (y/n — ↵ respawns)", len(targets), busy)
+		}
+		status = warnDot.Render(prompt)
 	case m.mode == modeConfirm && m.pending != nil:
 		prompt := fmt.Sprintf("Stop %q? (y/n — y confirms)", m.displayName(*m.pending))
 		switch {
@@ -542,7 +552,8 @@ func (m *Model) helpBar() string {
 	binds := []struct{ k, d string }{
 		{"n", "new"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
 		{"F", "fork"}, {"C", "clone"},
-		{"d", "remove"}, {"b", "bring back"}, {"l", "logs"}, {"o", "group"}, {"s", stopped},
+		{"d", "remove"}, {"b", "bring back"}, {"z/Z", "stop idle/all"},
+		{"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
 	}

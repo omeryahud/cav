@@ -223,6 +223,23 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.stoppedView = !m.stoppedView
 		m.cursor = 0
 		m.recompute()
+	case "z", "Z":
+		// Power save: stop session processes to spare the battery — z the idle
+		// ones, Z all of them (busy included). Conversations are kept; ↵ on a
+		// stopped session respawns it in place.
+		if m.stoppedView {
+			break
+		}
+		mode := "idle"
+		if msg.String() == "Z" {
+			mode = "all"
+		}
+		if len(m.killTargets(mode)) == 0 {
+			m.status = "no " + map[string]string{"idle": "idle", "all": "running"}[mode] + " session processes"
+			break
+		}
+		m.pendingKill = mode
+		m.mode = modeConfirm
 	case "r":
 		// The list refreshes continuously in the background; r just clears any
 		// stale status/error and forces an immediate preview reload.
@@ -525,6 +542,40 @@ func (m *Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Bulk power-save confirm (z/Z) — distinct from the single-session d confirm.
+	if m.pendingKill != "" {
+		mode := m.pendingKill
+		m.mode, m.pendingKill = modeList, ""
+		switch msg.String() {
+		case "y", "Y", "enter":
+		default:
+			return m, nil
+		}
+		targets := m.killTargets(mode)
+		var cmds []tea.Cmd
+		stopped := 0
+		for _, s := range targets {
+			jid := m.roster[s.SessionID]
+			if jid == "" {
+				continue // no job id — nothing claude stop could act on
+			}
+			// Keep it in the main pane: state.json will flip to "stopped", and the
+			// unpark mark overrides the stopped-window classification. ↵ respawns.
+			if err := m.unparked.Add(s.SessionID); err != nil {
+				m.err = err
+				return m, nil
+			}
+			cmds = append(cmds, stopCmd(jid))
+			stopped++
+		}
+		label := "idle "
+		if mode == "all" {
+			label = ""
+		}
+		m.status = fmt.Sprintf("stopping %d %ssession process(es)…", stopped, label)
+		m.recompute()
+		return m, tea.Batch(cmds...)
+	}
 	switch msg.String() {
 	case "y", "Y", "enter":
 		s := m.pending

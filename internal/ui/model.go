@@ -135,6 +135,7 @@ type Model struct {
 	selectJobID  string            // job id of a just-created session to highlight once it appears
 	pendingClone map[string]string // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
 	pending      *claude.Session   // session awaiting delete confirmation
+	pendingKill  string            // bulk power-save awaiting confirmation: "idle" (z) or "all" (Z)
 
 	// new-session directory picker
 	pickAll []string
@@ -392,6 +393,24 @@ func previewCmd(id, jobID string, live bool, width, height int, cfg config.Previ
 		}
 		return previewMsg{id: id, text: renderSnippets(preview.Recent(id, 14), width, cfg.MarkdownStyle)}
 	}
+}
+
+// killTargets returns the sessions the power-save keys would stop: every one
+// with a live daemon worker, minus the busy ones when mode is "idle" (z).
+// "waiting" (blocked on input) counts as idle — it isn't executing. Computed
+// fresh at render/confirm time, so the count in the prompt can't go stale.
+func (m *Model) killTargets(mode string) []claude.Session {
+	var out []claude.Session
+	for _, s := range m.all {
+		if !m.live[s.SessionID] {
+			continue
+		}
+		if mode == "idle" && s.Status == "busy" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func stopCmd(id string) tea.Cmd {
