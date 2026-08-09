@@ -83,6 +83,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prevAt = time.Time{} // force a preview load for the newly-selected session
 			}
 		}
+		// `cav -o <name>`: on the first refresh that has sessions, resolve the
+		// name and open the match — one shot, exactly as if ↵ was pressed on it.
+		// No/many matches degrade to the filter, so you're a keystroke from done.
+		if m.autoOpen != "" && len(m.all) > 0 {
+			name := m.autoOpen
+			m.autoOpen = ""
+			if cmd := m.openByName(name); cmd != nil {
+				return m, tea.Batch(waitRefresh(m.refreshes), cmd)
+			}
+		}
 		// Pump the next background refresh, and reload the selected preview —
 		// throttled (the list now refreshes continuously; selection changes load
 		// immediately via ensurePreview).
@@ -370,6 +380,35 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // isn't attachable (a status message is set in that case). When the user leaves
 // the conversation, ExecProcess resumes cav in place with all state intact; the
 // attach exit code is ignored — leaving via Ctrl+Z/Ctrl+C is a normal exit.
+// openByName opens the session a `cav -o <name>` argument resolves to: cursor
+// onto it (switching to the stopped window if that's where it lives — resuming
+// flips back to main) and then the usual ↵ open path. Without a unique match it
+// pre-fills the filter and reports, returning nil — one keystroke from done.
+func (m *Model) openByName(name string) tea.Cmd {
+	matches := m.resolveByName(name)
+	if len(matches) == 1 {
+		target := matches[0]
+		m.stoppedView = m.isStopped(target)
+		m.recompute()
+		for i := range m.view {
+			if m.view[i].SessionID == target.SessionID {
+				m.cursor = i
+				return m.openCurrent()
+			}
+		}
+		// Resolved but not visible (shouldn't happen) — fall through to the filter.
+	}
+	m.filter = name
+	m.stoppedView = false
+	m.recompute()
+	if len(matches) == 0 {
+		m.status = fmt.Sprintf("no session named %q", name)
+	} else {
+		m.status = fmt.Sprintf("%d sessions match %q — pick one", len(matches), name)
+	}
+	return nil
+}
+
 func (m *Model) openCurrent() tea.Cmd {
 	s := m.current()
 	if s == nil {

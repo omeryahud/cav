@@ -136,6 +136,7 @@ type Model struct {
 	pendingClone map[string]string // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
 	pending      *claude.Session   // session awaiting delete confirmation
 	pendingKill  string            // bulk power-save awaiting confirmation: "idle" (z) or "all" (Z)
+	autoOpen     string            // session name from `cav -o`; opened on the first refresh that resolves it
 
 	// new-session directory picker
 	pickAll []string
@@ -160,9 +161,10 @@ type Model struct {
 	height     int
 }
 
-// New constructs the initial model. initialFilter (the cav CLI argument)
-// pre-applies the / metadata filter, so `cav <term>` opens filtered to <term>.
-func New(initialFilter string) (*Model, error) {
+// New constructs the initial model. initialFilter (`cav <term>`) pre-applies
+// the / metadata filter; openName (`cav -o <name>`) opens that session as soon
+// as the first refresh can resolve the name.
+func New(initialFilter, openName string) (*Model, error) {
 	ti := textinput.New()
 	ti.Prompt = ""
 	ti.CharLimit = 512
@@ -176,6 +178,7 @@ func New(initialFilter string) (*Model, error) {
 		cfg:          cfg,
 		err:          cfgErr,
 		filter:       initialFilter,
+		autoOpen:     openName,
 		names:        names.Load(),
 		labels:       labels.Load(),
 		dismissed:    dismiss.Load(),
@@ -524,6 +527,36 @@ func (m *Model) rowName(s claude.Session) string {
 		return d + "/" + m.displayName(s)
 	}
 	return m.displayName(s)
+}
+
+// resolveByName resolves a `cav -o <name>` target against display names
+// (renames included), case-insensitively. Tiers, most to least specific:
+// exact match, then unique prefix, then unique substring — the first non-empty
+// tier wins, so "api" opens the session named exactly "api" even when
+// "api-fix" also exists. Returns every candidate in the winning tier; the
+// caller opens on exactly one and falls back to a filter otherwise.
+func (m *Model) resolveByName(name string) []claude.Session {
+	q := strings.ToLower(strings.TrimSpace(name))
+	var exact, prefix, sub []claude.Session
+	for _, s := range m.all {
+		n := strings.ToLower(m.displayName(s))
+		switch {
+		case n == q:
+			exact = append(exact, s)
+		case strings.HasPrefix(n, q):
+			prefix = append(prefix, s)
+		case strings.Contains(n, q):
+			sub = append(sub, s)
+		}
+	}
+	switch {
+	case len(exact) > 0:
+		return exact
+	case len(prefix) > 0:
+		return prefix
+	default:
+		return sub
+	}
 }
 
 // labelSuffix renders a session's labels for its row — " #tag1 #tag2" — or ""

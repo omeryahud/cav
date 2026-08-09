@@ -325,6 +325,14 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   isn't detectable in bubbletea v1), and it starts empty each time — or run
   `cav <term>` on the CLI to open with the filter already applied) · `f` search
   (transcript content) · `esc` clear · `r` refresh · `q` quit.
+- **CLI:** `cav` (everything) · `cav <term>` (pre-filtered) · `cav -o <name>`
+  (`--open`: resolve `<name>` against display names — renames included,
+  case-insensitive; exact match, else unique prefix, else unique substring
+  (`resolveByName`) — and **open that session** on the first refresh, exactly
+  like pressing `↵` on it: respawn if stopped, watchdog, title, and stepping
+  out lands back in cav with it highlighted. No or many matches → the list
+  opens with the filter pre-set to `<name>` and a status note, so you're one
+  keystroke from done. `-h`/`--help` prints usage; `-o` with no name exits 2.)
 
 ## Config files
 
