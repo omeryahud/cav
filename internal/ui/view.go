@@ -510,13 +510,21 @@ func (m *Model) footerBlock() string {
 	var status string
 	switch {
 	case m.mode == modeConfirm && m.pendingKill != "":
-		// Bulk power-save (z/Z). Counts render fresh each frame, so the prompt
+		// Power save (x/z/Z). Counts render fresh each frame, so the prompt
 		// tracks the continuously-refreshing list.
-		targets := m.killTargets(m.pendingKill)
-		prompt := fmt.Sprintf("Stop %d idle session process(es)? (y/n — ↵ on a stopped session respawns it)", len(targets))
-		if m.pendingKill == "all" {
+		var prompt string
+		switch {
+		case m.pendingKill == "one" && m.pending != nil:
+			prompt = fmt.Sprintf("Stop %q's process? (y/n — stays here; ↵ respawns)", m.displayName(*m.pending))
+			if m.pending.Status == "busy" {
+				prompt = fmt.Sprintf("Stop %q's process? it's BUSY — aborts its work (y/n — ↵ respawns)", m.displayName(*m.pending))
+			}
+		case m.pendingKill == "all":
+			targets := m.killTargets("all")
 			busy := len(targets) - len(m.killTargets("idle"))
 			prompt = fmt.Sprintf("Stop all %d session process(es)? (%d busy) (y/n — ↵ respawns)", len(targets), busy)
+		default:
+			prompt = fmt.Sprintf("Stop %d idle session process(es)? (y/n — ↵ on a stopped session respawns it)", len(m.killTargets("idle")))
 		}
 		status = warnDot.Render(prompt)
 	case m.mode == modeConfirm && m.pending != nil:
@@ -552,7 +560,7 @@ func (m *Model) helpBar() string {
 	binds := []struct{ k, d string }{
 		{"n", "new"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
 		{"F", "fork"}, {"C", "clone"},
-		{"d", "remove"}, {"b", "bring back"}, {"z/Z", "stop idle/all"},
+		{"d", "remove"}, {"b", "bring back"}, {"x", "stop"}, {"z/Z", "stop idle/all"},
 		{"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},

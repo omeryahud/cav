@@ -233,6 +233,22 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.stoppedView = !m.stoppedView
 		m.cursor = 0
 		m.recompute()
+	case "x":
+		// Single-session power save: stop the highlighted session's process (the
+		// z/Z semantics, one target). It stays in the main pane; ↵ respawns it.
+		if m.stoppedView {
+			break
+		}
+		if s := m.current(); s != nil {
+			if !hasLiveWorker(*s) {
+				m.status = m.displayName(*s) + " has no process to stop"
+				break
+			}
+			cp := *s
+			m.pending = &cp
+			m.pendingKill = "one"
+			m.mode = modeConfirm
+		}
 	case "z", "Z":
 		// Power save: stop session processes to spare the battery — z the idle
 		// ones, Z all of them (busy included). Conversations are kept; ↵ on a
@@ -581,14 +597,33 @@ func (m *Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Bulk power-save confirm (z/Z) — distinct from the single-session d confirm.
+	// Power-save confirms (x/z/Z) — distinct from the single-session d confirm.
 	if m.pendingKill != "" {
 		mode := m.pendingKill
-		m.mode, m.pendingKill = modeList, ""
+		target := m.pending
+		m.mode, m.pendingKill, m.pending = modeList, "", nil
 		switch msg.String() {
 		case "y", "Y", "enter":
 		default:
 			return m, nil
+		}
+		// "one" (x): just the snapshotted session — same stay-in-main semantics.
+		if mode == "one" {
+			if target == nil {
+				return m, nil
+			}
+			jid := m.roster[target.SessionID]
+			if jid == "" {
+				m.status = "can't stop " + m.displayName(*target) + " — no job id"
+				return m, nil
+			}
+			if err := m.unparked.Add(target.SessionID); err != nil {
+				m.err = err
+				return m, nil
+			}
+			m.status = "stopping " + m.displayName(*target) + "…"
+			m.recompute()
+			return m, stopCmd(jid)
 		}
 		targets := m.killTargets(mode)
 		var cmds []tea.Cmd

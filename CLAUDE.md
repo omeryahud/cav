@@ -273,17 +273,21 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   there, surviving restart — needing only the session id, so it works without a job
   id. Non-destructive: the session stays on disk; undo by editing that file. The
   confirm prompt names which action will run.
-- **Power save** (`z` / `Z`): stops session **processes** in bulk to spare the
-  battery — `z` every live worker that isn't busy ("waiting" counts as idle;
-  it isn't executing), `Z` all of them, busy included (the confirm shows the
-  busy count so aborting work is a knowing choice). Both confirm (y/n), with
-  target counts computed fresh each frame (`killTargets`) so the prompt can't
-  go stale against the continuous refresh. Unlike `d`, the stopped sessions
+- **Power save** (`x` / `z` / `Z`): stops session **processes** to spare the
+  battery — `x` the highlighted session only, `z` every live worker that isn't
+  busy ("waiting" counts as idle; it isn't executing), `Z` all of them, busy
+  included (the bulk confirm shows the busy count; `x` on a busy session warns
+  "it's BUSY — aborts its work", so interrupting work is a knowing choice).
+  All confirm (y/n); bulk target counts are computed fresh each frame
+  (`killTargets`) so the prompt can't go stale against the continuous refresh,
+  while `x` snapshots its target (`pendingKill="one"` + `m.pending`) so a
+  refresh reorder can't retarget it. Unlike `d`, the stopped sessions
   **stay in the main pane**: each target gets an `unparked` mark (persisted),
   which overrides the stopped-window classification — they show as ◌ stopped
-  in place, and `↵` respawns one where it stands. Conversations are kept;
-  this only kills processes. Main window only; the daemon's spare-process
-  pool is out of cav's hands (it's on-demand and exits when cav does).
+  in place, and `↵` respawns one where it stands. `x` on a session with no
+  live worker just says so. Conversations are kept; this only kills processes.
+  Main window only; the daemon's spare-process pool is out of cav's hands
+  (it's on-demand and exits when cav does).
 - **Fork** (`F`): forks the highlighted session into a new child background session
   that continues its conversation — `claude --bg --resume <sid> --fork-session`,
   in the parent's cwd, reusing its respawn flags (minus `--name`). The child→parent
@@ -312,7 +316,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
   `L` label (searchable `#tags`) · `F` fork (nests the child under the parent) ·
-  `C` clone (independent copy, top-level) · `z`/`Z` stop idle/all session
+  `C` clone (independent copy, top-level) · `x` stop the highlighted session's
+  process · `z`/`Z` stop idle/all session
   processes (power save; they stay in the main pane, `↵` respawns) ·
   `d` remove · `b` bring back (a
   stopped session to the main pane) · `l` logs ·
