@@ -338,6 +338,13 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   out lands back in cav with it highlighted. No or many matches → the list
   opens with the filter pre-set to `<name>` and a status note, so you're one
   keystroke from done. `-h`/`--help` prints usage; `-o` with no name exits 2.)
+  · `cav -n [name] [-a]` (`--new`: create a session **in the current dir** at
+  startup — Init fires `createCmd` alongside the first refresh; the session is
+  highlighted once it registers, exactly like the TUI `n`. With `-a`/`--attach`
+  the registration attaches instead (the `selectJobID` branch consumes
+  `attachNew` one-shot and calls `openCurrent`), so stepping out lands back in
+  cav with it highlighted. `-a` anywhere among the args; `-a` without `-n`
+  exits 2. No initial-prompt flag — the session starts idle.)
 
 ## Config files
 

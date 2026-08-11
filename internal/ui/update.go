@@ -74,13 +74,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.recompute()
 		// A just-created session (n/N) registers asynchronously; once it appears
-		// in the list, move the cursor to it (highlight it) instead of attaching.
+		// in the list, move the cursor to it (highlight it) instead of attaching —
+		// except for `cav -n -a`, which attaches to it right here.
 		if m.selectJobID != "" {
 			if i := m.viewIndexByJobID(m.selectJobID); i >= 0 {
 				m.cursor = i
 				m.previewScroll = 0
 				m.selectJobID = ""
 				m.prevAt = time.Time{} // force a preview load for the newly-selected session
+				if m.attachNew {
+					m.attachNew = false
+					if cmd := m.openCurrent(); cmd != nil {
+						return m, tea.Batch(waitRefresh(m.refreshes), cmd)
+					}
+				}
 			}
 		}
 		// `cav -o <name>`: on the first refresh that has sessions, resolve the

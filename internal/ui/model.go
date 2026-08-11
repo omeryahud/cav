@@ -137,6 +137,9 @@ type Model struct {
 	pending      *claude.Session   // session awaiting delete confirmation
 	pendingKill  string            // bulk power-save awaiting confirmation: "idle" (z) or "all" (Z)
 	autoOpen     string            // session name from `cav -o`; opened on the first refresh that resolves it
+	initNewDir   string            // `cav -n`: create a session here at startup ("" = off)
+	initNewName  string            // optional name for the -n session
+	attachNew    bool              // `-a`: attach to the -n session once it registers
 
 	// new-session directory picker
 	pickAll []string
@@ -161,10 +164,17 @@ type Model struct {
 	height     int
 }
 
-// New constructs the initial model. initialFilter (`cav <term>`) pre-applies
-// the / metadata filter; openName (`cav -o <name>`) opens that session as soon
-// as the first refresh can resolve the name.
-func New(initialFilter, openName string) (*Model, error) {
+// Options is what the cav CLI asks of the session (all fields optional).
+type Options struct {
+	Filter    string // `cav <term>`: pre-apply the / metadata filter
+	Open      string // `cav -o <name>`: open that session on the first refresh
+	NewInDir  string // `cav -n`: create a session in this directory at startup
+	NewName   string // optional name for the -n session
+	AttachNew bool   // `-a`: attach to the -n session the moment it registers
+}
+
+// New constructs the initial model from the CLI options.
+func New(opts Options) (*Model, error) {
 	ti := textinput.New()
 	ti.Prompt = ""
 	ti.CharLimit = 512
@@ -177,8 +187,11 @@ func New(initialFilter, openName string) (*Model, error) {
 	return &Model{
 		cfg:          cfg,
 		err:          cfgErr,
-		filter:       initialFilter,
-		autoOpen:     openName,
+		filter:       opts.Filter,
+		autoOpen:     opts.Open,
+		initNewDir:   opts.NewInDir,
+		initNewName:  opts.NewName,
+		attachNew:    opts.AttachNew,
 		names:        names.Load(),
 		labels:       labels.Load(),
 		dismissed:    dismiss.Load(),
@@ -198,10 +211,16 @@ func New(initialFilter, openName string) (*Model, error) {
 	}, nil
 }
 
-// Init starts the background refresh loop and begins consuming its results.
+// Init starts the background refresh loop and begins consuming its results —
+// plus, for `cav -n`, the session create (createdMsg then stashes the new job
+// id, and the refresh that first sees it highlights or attaches).
 func (m *Model) Init() tea.Cmd {
 	m.refreshes = make(chan refreshResult)
 	go refreshLoop(m.refreshes, m.cfg.List.MinRefresh)
+	if m.initNewDir != "" {
+		return tea.Batch(waitRefresh(m.refreshes),
+			createCmd(m.initNewDir, m.initNewName, "", m.cfg.Timeouts.Command))
+	}
 	return waitRefresh(m.refreshes)
 }
 
