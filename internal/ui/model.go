@@ -219,7 +219,7 @@ func (m *Model) Init() tea.Cmd {
 	go refreshLoop(m.refreshes, m.cfg.List.MinRefresh)
 	if m.initNewDir != "" {
 		return tea.Batch(waitRefresh(m.refreshes),
-			createCmd(m.initNewDir, m.initNewName, "", m.cfg.Timeouts.Command))
+			createCmd(m.initNewDir, m.initNewName, "", m.cfg.NewSession, m.cfg.Timeouts.Command))
 	}
 	return waitRefresh(m.refreshes)
 }
@@ -328,11 +328,11 @@ func searchCmd(q string) tea.Cmd {
 	}
 }
 
-func createCmd(cwd, name, prompt string, timeout time.Duration) tea.Cmd {
+func createCmd(cwd, name, prompt string, ns config.NewSession, timeout time.Duration) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		jobID, err := claude.Create(ctx, cwd, name, prompt)
+		jobID, err := claude.Create(ctx, cwd, name, prompt, ns.Model, ns.Effort)
 		if err != nil {
 			return actionMsg{err: err}
 		}
@@ -374,7 +374,7 @@ func validProjectPath(cwd, root string) error {
 	return nil
 }
 
-func newProjectCmd(cwd, name, prompt, root string, timeout time.Duration) tea.Cmd {
+func newProjectCmd(cwd, name, prompt, root string, ns config.NewSession, timeout time.Duration) tea.Cmd {
 	return func() tea.Msg {
 		if err := validProjectPath(cwd, root); err != nil {
 			return actionMsg{err: err}
@@ -388,7 +388,7 @@ func newProjectCmd(cwd, name, prompt, root string, timeout time.Duration) tea.Cm
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		jobID, err := claude.Create(ctx, cwd, name, prompt)
+		jobID, err := claude.Create(ctx, cwd, name, prompt, ns.Model, ns.Effort)
 		if err != nil {
 			return actionMsg{err: err}
 		}

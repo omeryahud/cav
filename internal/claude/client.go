@@ -166,19 +166,33 @@ func Stop(ctx context.Context, id string) error {
 	return nil
 }
 
-// Create starts a new background session in cwd with an optional name and prompt
-// (an empty prompt yields an idle session). It returns the new session's short
-// job id, parsed from `claude --bg`'s output, for attaching to it; the id is ""
-// if it couldn't be parsed.
-func Create(ctx context.Context, cwd, name, prompt string) (string, error) {
+// createArgs builds the `claude --bg` invocation for a new session. model and
+// effort are passed explicitly when non-empty, so a cav-created session's
+// respawnFlags record them — respawns keep them, and forks/clones (which reuse
+// the parent's respawn flags) inherit them too.
+func createArgs(name, prompt, model, effort string) []string {
 	args := []string{"--bg"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if effort != "" {
+		args = append(args, "--effort", effort)
+	}
 	if name != "" {
 		args = append(args, "--name", name)
 	}
 	if prompt != "" {
 		args = append(args, prompt)
 	}
-	cmd := exec.CommandContext(ctx, Bin(), args...)
+	return args
+}
+
+// Create starts a new background session in cwd with an optional name and prompt
+// (an empty prompt yields an idle session), pinning model/effort when given.
+// It returns the new session's short job id, parsed from `claude --bg`'s
+// output, for attaching to it; the id is "" if it couldn't be parsed.
+func Create(ctx context.Context, cwd, name, prompt, model, effort string) (string, error) {
+	cmd := exec.CommandContext(ctx, Bin(), createArgs(name, prompt, model, effort)...)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

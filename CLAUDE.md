@@ -360,6 +360,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   |---|---|---|
   | `projectRoot` | `~/go/src/github.com/omeryahud` | where `N` creates projects — and the only place it may (`validProjectPath`). `~`/`$VAR` expanded; must be absolute |
   | `claudeBin` | `claude` | the claude executable (`$CLAUDE_BIN` still overrides it) |
+  | `newSession.model` | `fable` | `--model` passed on every cav-created session (`n`/`N`/`cav -n`); `""` = don't pass |
+  | `newSession.effort` | `max` | `--effort` likewise (low\|medium\|high\|xhigh\|max; `""` = don't pass) |
   | `preview.minWidth` | 100 | hide the preview pane below this terminal width |
   | `preview.widthPercent` | 50 | pane width as a % of the terminal (10–90) |
   | `preview.emuCols` / `emuRows` | 220 / 64 | emulated terminal size for a live session's screen (floors) |
@@ -425,6 +427,11 @@ asynchronously, so cav stashes that id (`selectJobID`) and moves the cursor to
 the session once it shows up in a refresh (the continuous background loop catches
 it, ~0.5s).
 (`--bg` ignores `--session-id`, so we can't choose the id ourselves.)
+Every cav-created session is launched with an **explicit model/effort**
+(`createArgs`: `--model fable --effort max` by default, `newSession.*` in
+config.json; `""` omits the flag). Because they land in the job's respawnFlags,
+respawns keep them and forks/clones (which reuse the parent's flags) inherit
+them — cav never adds model/effort of its own on the fork/clone path.
 
 ## Conventions
 

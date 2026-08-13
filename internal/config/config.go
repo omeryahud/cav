@@ -37,11 +37,21 @@ func Path() string { return filepath.Join(Dir(), "config.json") }
 type Config struct {
 	ProjectRoot string // where N creates new projects (and the only place it may)
 	ClaudeBin   string // claude executable ($CLAUDE_BIN still wins)
+	NewSession  NewSession
 	Preview     Preview
 	List        List
 	Picker      Picker
 	Timeouts    Timeouts
 	Colors      Colors
+}
+
+// NewSession covers sessions cav creates (n, N, `cav -n`): the model/effort
+// passed explicitly on the `claude --bg` invocation. Empty means "don't pass
+// the flag" (the daemon's own default applies). Deliberately NOT inherited by
+// fork/clone, which reuse the parent's respawn flags instead.
+type NewSession struct {
+	Model  string // --model for new sessions
+	Effort string // --effort for new sessions (low|medium|high|xhigh|max)
 }
 
 // Preview covers the right-hand pane.
@@ -107,6 +117,7 @@ func Defaults() Config {
 	return Config{
 		ProjectRoot: filepath.Join(home, "go", "src", "github.com", "omeryahud"),
 		ClaudeBin:   "claude",
+		NewSession:  NewSession{Model: "fable", Effort: "max"},
 		Preview: Preview{
 			MinWidth:      100,
 			WidthPercent:  50,
@@ -152,6 +163,7 @@ func Defaults() Config {
 type file struct {
 	ProjectRoot *string      `json:"projectRoot"`
 	ClaudeBin   *string      `json:"claudeBin"`
+	NewSession  *newSessFile `json:"newSession"`
 	Preview     *previewFile `json:"preview"`
 	List        *listFile    `json:"list"`
 	Picker      *pickerFile  `json:"picker"`
@@ -178,6 +190,11 @@ type listFile struct {
 
 type pickerFile struct {
 	MaxDepth *int `json:"maxDepth"`
+}
+
+type newSessFile struct {
+	Model  *string `json:"model"`
+	Effort *string `json:"effort"`
 }
 
 type timeoutFile struct {
@@ -253,6 +270,17 @@ func Load() (Config, error) {
 	}
 	if f.ClaudeBin != nil && *f.ClaudeBin != "" {
 		cfg.ClaudeBin = *f.ClaudeBin
+	}
+	if n := f.NewSession; n != nil {
+		// An explicit "" is meaningful here: it means "don't pass the flag", so
+		// the daemon's own default applies. Only the effort value is validated.
+		if n.Model != nil {
+			cfg.NewSession.Model = strings.TrimSpace(*n.Model)
+		}
+		if n.Effort != nil {
+			l.setEnum(&cfg.NewSession.Effort, n.Effort, "newSession.effort",
+				[]string{"", "low", "medium", "high", "xhigh", "max"}, "(want low|medium|high|xhigh|max or empty)")
+		}
 	}
 	l.applyPreview(&cfg.Preview, f.Preview)
 	l.applyList(&cfg.List, f.List)

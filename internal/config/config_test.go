@@ -86,6 +86,46 @@ func TestUnknownKeysIgnored(t *testing.T) {
 	}
 }
 
+func TestNewSessionDefaultsAndOverride(t *testing.T) {
+	withConfig(t, "")
+	cfg, _ := Load()
+	if cfg.NewSession.Model != "fable" || cfg.NewSession.Effort != "max" {
+		t.Errorf("defaults = %+v, want fable/max", cfg.NewSession)
+	}
+
+	withConfig(t, `{"newSession": {"model": "opus", "effort": "high"}}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.NewSession.Model != "opus" || cfg.NewSession.Effort != "high" {
+		t.Errorf("override = %+v, want opus/high", cfg.NewSession)
+	}
+}
+
+func TestNewSessionExplicitEmptyMeansNoFlag(t *testing.T) {
+	// "" is a real override here — "don't pass the flag" — not an unset key.
+	withConfig(t, `{"newSession": {"model": "", "effort": ""}}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.NewSession.Model != "" || cfg.NewSession.Effort != "" {
+		t.Errorf("explicit empty should clear both, got %+v", cfg.NewSession)
+	}
+}
+
+func TestNewSessionBadEffortRejected(t *testing.T) {
+	withConfig(t, `{"newSession": {"effort": "turbo"}}`)
+	cfg, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "newSession.effort") {
+		t.Fatalf("want a newSession.effort complaint, got %v", err)
+	}
+	if cfg.NewSession.Effort != "max" {
+		t.Errorf("rejected effort should keep the default, got %q", cfg.NewSession.Effort)
+	}
+}
+
 func TestFullOverride(t *testing.T) {
 	withConfig(t, `{
 	  "projectRoot": "/tmp/projects",

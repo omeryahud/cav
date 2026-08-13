@@ -545,10 +545,10 @@ func (m *Model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Blur()
 		if m.newIsProject {
 			m.status = "creating project…"
-			return m, newProjectCmd(m.newCWD, m.newName, prompt, m.cfg.ProjectRoot, m.cfg.Timeouts.Command)
+			return m, newProjectCmd(m.newCWD, m.newName, prompt, m.cfg.ProjectRoot, m.cfg.NewSession, m.cfg.Timeouts.Command)
 		}
 		m.status = "creating session…"
-		return m, createCmd(m.newCWD, m.newName, prompt, m.cfg.Timeouts.Command)
+		return m, createCmd(m.newCWD, m.newName, prompt, m.cfg.NewSession, m.cfg.Timeouts.Command)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
