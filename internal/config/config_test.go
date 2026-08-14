@@ -86,6 +86,29 @@ func TestUnknownKeysIgnored(t *testing.T) {
 	}
 }
 
+func TestStatusBgColors(t *testing.T) {
+	withConfig(t, "")
+	cfg, _ := Load()
+	if cfg.Colors.RunningBg != "#0f3524" || cfg.Colors.ErrorBg != "#3a1414" {
+		t.Errorf("bg defaults = %+v", cfg.Colors)
+	}
+	// Override one, disable another with an explicit ""; invalid value rejected.
+	withConfig(t, `{"colors": {"runningBg": "#001100", "waitingBg": "", "completeBg": "nope"}}`)
+	cfg, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "completeBg") {
+		t.Fatalf("want a completeBg complaint, got %v", err)
+	}
+	if cfg.Colors.RunningBg != "#001100" {
+		t.Errorf("RunningBg = %q", cfg.Colors.RunningBg)
+	}
+	if cfg.Colors.WaitingBg != "" {
+		t.Errorf("explicit empty should disable the tint, got %q", cfg.Colors.WaitingBg)
+	}
+	if cfg.Colors.CompleteBg != Defaults().Colors.CompleteBg {
+		t.Errorf("rejected value should keep the default, got %q", cfg.Colors.CompleteBg)
+	}
+}
+
 func TestPreviewStartOn(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()

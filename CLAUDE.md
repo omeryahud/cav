@@ -148,7 +148,10 @@ only `agents` status `busy` means actually running.
 | state `stopped` | `stopped` | ◌ dim |
 | interactive / unknown | (other) | · dim |
 
-Bucket sub-headers and dots are color-coded and kept in sync.
+Bucket sub-headers and dots are color-coded and kept in sync. Rows in the
+running/waiting/complete/error buckets also get a **full-row background hue**
+(`statusBg` in `view.go`, `colors.*Bg` in config.json) so active states are
+visible at a glance.
 
 ## UI behavior
 
@@ -393,7 +396,10 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   attributes (bold/italic/faint) stay in code. Roles: `running` `waiting`
   `error` `complete` `idle` `idleHeader` `dim` `help` `name` `accent`
   `dirHeader` `dirPath` `statusHeader` `titleFg` `titleBg` `selectionBg`
-  `userLabel` `assistantLabel`. A role drives both a status dot and its bucket
+  `userLabel` `assistantLabel`, plus the **row background tints** `runningBg`
+  `waitingBg` `completeBg` `errorBg` — subtle full-row hues behind the
+  noteworthy status buckets (idle/stopped rows stay plain; the selection bar
+  always wins). An explicit `""` turns an individual tint off. A role drives both a status dot and its bucket
   header, so the two can't drift apart (`applyPalette` in `view.go` rebuilds
   every style from it). Roles are independent even where defaults coincide
   (`idle`/`dim` are both 244), so retheming one never disturbs another.

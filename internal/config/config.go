@@ -109,6 +109,13 @@ type Colors struct {
 	TitleBg     string // header bar background
 	SelectionBg string // highlighted row background
 
+	// Row background tints by status bucket — subtle full-row hues so active
+	// states pop. Empty string = no tint for that bucket (idle/stopped never tint).
+	RunningBg  string
+	WaitingBg  string
+	CompleteBg string
+	ErrorBg    string
+
 	UserLabel      string // "user" role label in the preview
 	AssistantLabel string // "assistant" role label in the preview
 }
@@ -158,6 +165,10 @@ func Defaults() Config {
 			TitleFg:        "254",
 			TitleBg:        "238",
 			SelectionBg:    "238",
+			RunningBg:      "#0f3524",
+			WaitingBg:      "#3a2a0f",
+			CompleteBg:     "#0f2f3a",
+			ErrorBg:        "#3a1414",
 			UserLabel:      "42",
 			AssistantLabel: "147",
 		},
@@ -227,6 +238,10 @@ type colorsFile struct {
 	TitleFg        *colorRef `json:"titleFg"`
 	TitleBg        *colorRef `json:"titleBg"`
 	SelectionBg    *colorRef `json:"selectionBg"`
+	RunningBg      *colorRef `json:"runningBg"`
+	WaitingBg      *colorRef `json:"waitingBg"`
+	CompleteBg     *colorRef `json:"completeBg"`
+	ErrorBg        *colorRef `json:"errorBg"`
 	UserLabel      *colorRef `json:"userLabel"`
 	AssistantLabel *colorRef `json:"assistantLabel"`
 }
@@ -373,6 +388,16 @@ func (l *loader) setColor(dst *string, v *colorRef, key string) {
 	}
 }
 
+// setColorOrOff is setColor for optional tints: an explicit "" is a real
+// value meaning "no tint", not an unset key.
+func (l *loader) setColorOrOff(dst *string, v *colorRef, key string) {
+	if v != nil && v.s == "" {
+		*dst = ""
+		return
+	}
+	l.setColor(dst, v, key)
+}
+
 func (l *loader) applyPreview(dst *Preview, p *previewFile) {
 	if p == nil {
 		return
@@ -438,6 +463,10 @@ func (l *loader) applyColors(dst *Colors, c *colorsFile) {
 	} {
 		l.setColor(e.dst, e.v, e.key)
 	}
+	l.setColorOrOff(&dst.RunningBg, c.RunningBg, "runningBg")
+	l.setColorOrOff(&dst.WaitingBg, c.WaitingBg, "waitingBg")
+	l.setColorOrOff(&dst.CompleteBg, c.CompleteBg, "completeBg")
+	l.setColorOrOff(&dst.ErrorBg, c.ErrorBg, "errorBg")
 }
 
 // validColor accepts an ANSI 256 index or a #rgb/#rrggbb hex string.

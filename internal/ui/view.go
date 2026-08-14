@@ -47,6 +47,9 @@ var (
 	// preview role labels (user vs assistant); message bodies are markdown-rendered
 	userLabel lipgloss.Style
 	asstLabel lipgloss.Style
+
+	// statusBg tints whole rows by status bucket (see applyPalette)
+	statusBg map[string]lipgloss.Color
 )
 
 // Styles exist before New runs (tests, and any render before the model loads).
@@ -82,6 +85,20 @@ func applyPalette(c config.Colors) {
 
 	userLabel = fg(c.UserLabel).Bold(true)
 	asstLabel = fg(c.AssistantLabel).Bold(true)
+
+	// Row background tints by normalized status; absent bucket = no tint.
+	// idle/stopped/other stay untinted on purpose, so the active states pop.
+	statusBg = map[string]lipgloss.Color{}
+	for st, col := range map[string]string{
+		"running":  c.RunningBg,
+		"waiting":  c.WaitingBg,
+		"complete": c.CompleteBg,
+		"error":    c.ErrorBg,
+	} {
+		if col != "" {
+			statusBg[st] = lipgloss.Color(col)
+		}
+	}
 }
 
 // renderSnippets renders the recent conversation: a color-coded role label per
@@ -419,19 +436,26 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 	if sel {
 		// Full-width highlight bar: pad the body so the background spans the row,
 		// and tint every segment (cursor, dot, text) with the same background.
+		// Selection always wins over the status hue.
 		body = padRight(body, avail)
 		return cursorStyle.Background(selBg).Render("▸ ") +
 			dotStyle.Background(selBg).Render(glyph) +
 			selName.Background(selBg).Render(" "+body)
 	}
 
-	switch {
-	case !attach:
-		body = dimStyle.Render(body)
-	default:
-		body = nameStyle.Render(body)
+	txtStyle := nameStyle
+	if !attach {
+		txtStyle = dimStyle
 	}
-	return "  " + dotStyle.Render(glyph) + " " + body
+	// Status hue: a subtle full-row background for the noteworthy buckets
+	// (running/waiting/complete/error); idle and stopped rows stay plain.
+	if bg, ok := statusBg[st]; ok {
+		body = padRight(body, avail)
+		return lipgloss.NewStyle().Background(bg).Render("  ") +
+			dotStyle.Background(bg).Render(glyph) +
+			txtStyle.Background(bg).Render(" "+body)
+	}
+	return "  " + dotStyle.Render(glyph) + " " + txtStyle.Render(body)
 }
 
 // ghostRowLine renders a forked child's parent as a faint, non-selectable context
