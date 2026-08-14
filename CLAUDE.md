@@ -155,9 +155,11 @@ visible at a glance.
 
 ## UI behavior
 
-- **Grouping** (`o` cycles four `groupMode`s): **dir→status** (default; by cwd,
-  then status) → **status→dir** (by status, then cwd) → **recent** (flat, most
-  recently entered first) → **none** (flat, alphabetical).
+- **Grouping** (`o` cycles four `groupMode`s): **status→dir** (default; by
+  status, then cwd) → **recent** (flat, most recently entered first) → **none**
+  (flat, alphabetical) → **dir→status** (by cwd, then status). The startup mode
+  is `list.grouping` in config.json (`dir-status`|`status-dir`|`recent`|
+  `alphabetical`, default `status-dir`, mapped by `groupingFromConfig`).
   A directory header is the **name** (bold) with the **full path faint on its own
   line**; a status header is the color-coded bucket label. Whichever key is the
   *secondary* one is shown indented under the primary. Only the two dir/status
@@ -166,8 +168,9 @@ visible at a glance.
   (`internal/entered`, stamped in `openCurrent` when you open a session, so it
   reflects when *you* stepped in — nothing on disk records that); sessions never
   entered have no timestamp and sort last, alphabetically among themselves.
-  The active non-default mode shows in the header (`group:status→dir` /
-  `recently entered` / `alphabetical`). Rows show
+  The header flags the grouping only when it differs from the **configured
+  default** (`m.groupDefault`) — `group:dir→status` / `group:status→dir` /
+  `recently entered` / `alphabetical`; the resting mode shows nothing. Rows show
   **dirname/name · status · age** — the cwd's leaf dir is prefixed onto every
   session name (`rowName`, a display-only decoration computed from the cwd, so it
   applies to all sessions and isn't part of the editable rename) — no conversation
@@ -388,6 +391,7 @@ visible at a glance.
   | `list.minRefreshMs` | 250 | floor between refreshes (guards a hot spin) |
   | `list.idleAfterMs` | 60000 | no keypress for this long → idle poll backoff (0 disables) |
   | `list.idleRefreshMs` | 10000 | poll interval while idle; any key wakes instantly (`zzz` shows in the header) |
+  | `list.grouping` | `status-dir` | startup grouping: `dir-status`\|`status-dir`\|`recent`\|`alphabetical` (`o` cycles from there) |
   | `picker.maxDepth` | 8 | how deep the dir-picker walk descends |
   | `timeouts.commandMs` | 25000 | one-shot claude invocations (create/fork/clone) |
   | `colors.*` | see below | the palette, by role |

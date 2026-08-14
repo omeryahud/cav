@@ -86,6 +86,24 @@ func TestUnknownKeysIgnored(t *testing.T) {
 	}
 }
 
+func TestGroupingKey(t *testing.T) {
+	withConfig(t, "")
+	cfg, _ := Load()
+	if cfg.List.Grouping != "status-dir" {
+		t.Errorf("default grouping = %q, want status-dir", cfg.List.Grouping)
+	}
+	withConfig(t, `{"list": {"grouping": "recent"}}`)
+	cfg, err := Load()
+	if err != nil || cfg.List.Grouping != "recent" {
+		t.Errorf("override: grouping=%q err=%v", cfg.List.Grouping, err)
+	}
+	withConfig(t, `{"list": {"grouping": "sideways"}}`)
+	cfg, err = Load()
+	if err == nil || cfg.List.Grouping != "status-dir" {
+		t.Errorf("invalid value should be rejected keeping the default, got %q err=%v", cfg.List.Grouping, err)
+	}
+}
+
 func TestStatusBgColors(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()

@@ -60,3 +60,17 @@ func TestActivityTouchAndWake(t *testing.T) {
 	default:
 	}
 }
+
+func TestGroupingFromConfig(t *testing.T) {
+	for v, want := range map[string]grouping{
+		"dir-status":   groupDirStatus,
+		"status-dir":   groupStatusDir,
+		"recent":       groupRecent,
+		"alphabetical": groupNone,
+		"":             groupStatusDir, // config default wins for anything else
+	} {
+		if got := groupingFromConfig(v); got != want {
+			t.Errorf("groupingFromConfig(%q) = %v, want %v", v, got, want)
+		}
+	}
+}

@@ -49,6 +49,21 @@ const (
 // (alphabetical, recently-entered) render as a plain list.
 func (g grouping) grouped() bool { return g == groupDirStatus || g == groupStatusDir }
 
+// groupingFromConfig maps config.json's list.grouping value onto a mode.
+// Config validation guarantees one of these strings; default to status-dir.
+func groupingFromConfig(v string) grouping {
+	switch v {
+	case "dir-status":
+		return groupDirStatus
+	case "recent":
+		return groupRecent
+	case "alphabetical":
+		return groupNone
+	default:
+		return groupStatusDir
+	}
+}
+
 type mode int
 
 const (
@@ -124,6 +139,7 @@ type Model struct {
 	depth        map[string]int            // sessionId -> fork-tree depth (0 = top-level), set by recompute
 	ghostParent  map[string]claude.Session // (stopped view) first child of a ghost group -> its active parent, shown as a faint context row
 	groupMode    grouping                  // none (alphabetical) | dir→status | status→dir | recent (o cycles)
+	groupDefault grouping                  // configured startup mode; the header flags any other mode
 	stoppedView  bool                      // true: showing the stopped-sessions window (s toggles)
 	justStopped  map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
 	cfg          config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
@@ -206,7 +222,8 @@ func New(opts Options) (*Model, error) {
 		entered:      entered.Load(),
 		input:        ti,
 		mode:         modeList,
-		groupMode:    groupDirStatus,
+		groupMode:    groupingFromConfig(cfg.List.Grouping),
+		groupDefault: groupingFromConfig(cfg.List.Grouping),
 		previewOn:    cfg.Preview.StartOn,
 		prevCache:    map[string]string{},
 		prevReq:      map[string]bool{},

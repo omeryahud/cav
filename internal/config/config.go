@@ -74,6 +74,7 @@ type List struct {
 	MinRefresh     time.Duration // floor between refreshes, guards a hot spin
 	IdleAfter      time.Duration // no keypress for this long -> idle backoff (0 disables)
 	IdleRefresh    time.Duration // poll interval while idle (any key wakes instantly)
+	Grouping       string        // startup grouping: dir-status | status-dir | recent | alphabetical
 }
 
 // Picker covers the new-session directory picker.
@@ -145,6 +146,7 @@ func Defaults() Config {
 			MinRefresh:     250 * time.Millisecond,
 			IdleAfter:      60 * time.Second,
 			IdleRefresh:    10 * time.Second,
+			Grouping:       "status-dir",
 		},
 		Picker:   Picker{MaxDepth: 8},
 		Timeouts: Timeouts{Command: 25 * time.Second},
@@ -200,12 +202,13 @@ type previewFile struct {
 }
 
 type listFile struct {
-	NameColMax     *int `json:"nameColMax"`
-	NameColReserve *int `json:"nameColReserve"`
-	StatusTTLMs    *int `json:"statusTTLMs"`
-	MinRefreshMs   *int `json:"minRefreshMs"`
-	IdleAfterMs    *int `json:"idleAfterMs"`
-	IdleRefreshMs  *int `json:"idleRefreshMs"`
+	NameColMax     *int    `json:"nameColMax"`
+	NameColReserve *int    `json:"nameColReserve"`
+	StatusTTLMs    *int    `json:"statusTTLMs"`
+	MinRefreshMs   *int    `json:"minRefreshMs"`
+	IdleAfterMs    *int    `json:"idleAfterMs"`
+	IdleRefreshMs  *int    `json:"idleRefreshMs"`
+	Grouping       *string `json:"grouping"`
 }
 
 type pickerFile struct {
@@ -431,6 +434,9 @@ func (l *loader) applyList(dst *List, c *listFile) {
 		l.setMs(&dst.IdleAfter, c.IdleAfterMs, "list.idleAfterMs", 5000)
 	}
 	l.setMs(&dst.IdleRefresh, c.IdleRefreshMs, "list.idleRefreshMs", 1000)
+	l.setEnum(&dst.Grouping, c.Grouping, "list.grouping",
+		[]string{"dir-status", "status-dir", "recent", "alphabetical"},
+		"(want dir-status|status-dir|recent|alphabetical)")
 }
 
 func (l *loader) applyColors(dst *Colors, c *colorsFile) {

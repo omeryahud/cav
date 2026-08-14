@@ -230,13 +230,19 @@ func (m *Model) indicators() string {
 	if m.matchIDs != nil {
 		parts = append(parts, "search")
 	}
-	switch m.groupMode {
-	case groupNone:
-		parts = append(parts, "alphabetical")
-	case groupStatusDir:
-		parts = append(parts, "group:status→dir")
-	case groupRecent:
-		parts = append(parts, "recently entered")
+	// Flag the grouping only when it differs from the configured default
+	// (list.grouping) — the resting mode shouldn't nag.
+	if m.groupMode != m.groupDefault {
+		switch m.groupMode {
+		case groupNone:
+			parts = append(parts, "alphabetical")
+		case groupDirStatus:
+			parts = append(parts, "group:dir→status")
+		case groupStatusDir:
+			parts = append(parts, "group:status→dir")
+		case groupRecent:
+			parts = append(parts, "recently entered")
+		}
 	}
 	if m.stoppedView {
 		parts = append(parts, "s: back to active")
