@@ -63,6 +63,7 @@ type Preview struct {
 	MaxLogBytes   int           // cap on the trailing `claude logs` output emulated
 	Refresh       time.Duration // throttle between background preview reloads
 	MarkdownStyle string        // glamour style for the non-live transcript view
+	StartOn       bool          // show the preview pane on startup (p toggles it any time)
 }
 
 // List covers the session list and footer.
@@ -128,6 +129,7 @@ func Defaults() Config {
 			MaxLogBytes:   256 << 10,
 			Refresh:       2 * time.Second,
 			MarkdownStyle: "dark",
+			StartOn:       false,
 		},
 		List: List{
 			NameColMax:     50,
@@ -183,6 +185,7 @@ type previewFile struct {
 	MaxLogBytes   *int    `json:"maxLogBytes"`
 	RefreshMs     *int    `json:"refreshMs"`
 	MarkdownStyle *string `json:"markdownStyle"`
+	StartOn       *bool   `json:"startOn"`
 }
 
 type listFile struct {
@@ -380,6 +383,9 @@ func (l *loader) applyPreview(dst *Preview, p *previewFile) {
 	l.setInt(&dst.MaxLogBytes, p.MaxLogBytes, "preview.maxLogBytes", 1024)
 	l.setMs(&dst.Refresh, p.RefreshMs, "preview.refreshMs", 100)
 	l.setRange(&dst.WidthPercent, p.WidthPercent, "preview.widthPercent", 10, 90)
+	if v := p.StartOn; v != nil {
+		dst.StartOn = *v
+	}
 	l.setEnum(&dst.MarkdownStyle, p.MarkdownStyle, "preview.markdownStyle",
 		[]string{"dark", "light", "notty", "ascii", "dracula", "pink", "tokyo-night"},
 		"(unknown glamour style)")

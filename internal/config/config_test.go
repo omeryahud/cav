@@ -86,6 +86,28 @@ func TestUnknownKeysIgnored(t *testing.T) {
 	}
 }
 
+func TestPreviewStartOn(t *testing.T) {
+	withConfig(t, "")
+	cfg, _ := Load()
+	if cfg.Preview.StartOn {
+		t.Error("preview should default to hidden on startup")
+	}
+	withConfig(t, `{"preview": {"startOn": true}}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Preview.StartOn {
+		t.Error("startOn: true should be honored")
+	}
+	// An explicit false stays false, and siblings still apply around it.
+	withConfig(t, `{"preview": {"startOn": false, "minWidth": 120}}`)
+	cfg, _ = Load()
+	if cfg.Preview.StartOn || cfg.Preview.MinWidth != 120 {
+		t.Errorf("got StartOn=%v MinWidth=%d", cfg.Preview.StartOn, cfg.Preview.MinWidth)
+	}
+}
+
 func TestIdleBackoffKeys(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()

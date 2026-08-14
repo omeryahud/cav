@@ -207,7 +207,7 @@ func New(opts Options) (*Model, error) {
 		input:        ti,
 		mode:         modeList,
 		groupMode:    groupDirStatus,
-		previewOn:    true,
+		previewOn:    cfg.Preview.StartOn,
 		prevCache:    map[string]string{},
 		prevReq:      map[string]bool{},
 		states:       map[string]string{},

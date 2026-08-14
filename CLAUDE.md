@@ -198,7 +198,9 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   session. `applyForkTree` returns the ghost map (`m.ghostParent`, first child of
   a group → its parent session, resolved from `m.all`); only the stopped view
   populates it. `groupedVisual`/`flatVisual` draw the ghost just above the branch.
-- **Preview pane** (right, 50% width, `p` toggles), reloaded on a ~2s throttle
+- **Preview pane** (right, 50% width, `p` toggles; **hidden on startup** by
+  default — `preview.startOn` in config.json shows it from launch), reloaded on
+  a ~2s throttle
   (`previewRefresh`) even though the list refreshes continuously, so `claude logs`
   isn't hammered; a selection change reloads it immediately:
   - For a session with a **live worker**, it shows the **actual terminal screen**:
@@ -376,6 +378,7 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   | `preview.maxLogBytes` | 262144 | cap on trailing `claude logs` output emulated |
   | `preview.refreshMs` | 2000 | throttle between background preview reloads |
   | `preview.markdownStyle` | `dark` | glamour style for the non-live transcript view |
+  | `preview.startOn` | `false` | show the preview pane on startup (`p` toggles it any time) |
   | `list.nameColMax` | 50 | name-column cap **when the preview is on** (off = fit the longest name) |
   | `list.nameColReserve` | 18 | columns kept for the status/age columns |
   | `list.statusTTLMs` | 6000 | how long a footer note lingers |
