@@ -98,6 +98,14 @@ goroutine** (`refreshLoop`) — no fixed poll delay, so the list updates as fast
 a refresh completes (~0.5s, bounded by `claude agents --json`; a small `minRefresh`
 floor only guards against a hot spin if a refresh returns instantly). Results flow
 to the update loop via a channel (`waitRefresh`), which re-arms itself each time.
+**Idle backoff:** each `agents --json` spawn costs ~0.5 CPU-s, so a forgotten cav
+polling at full rate burns real power (19 stale instances ≈ several cores,
+measured). After `list.idleAfterMs` (60s) without a keypress, the loop naps
+`list.idleRefreshMs` (10s) between polls (`idleDelay`/`activity` in `model.go`;
+every keypress stamps `act.touch()`, which also wakes an in-progress nap through
+a buffered channel — drained-and-rechecked to dodge the stamp/token race). The
+header shows `zzz` while napping and "N other cavs running" (`countOtherCavs`,
+a per-refresh `pgrep -x cav`) so stale instances get noticed and quit.
 The merge:
 1. List live sessions; build `sessionId → jobId` from `LoadRoster` (authoritative,
    correct post-branch) **plus** the on-disk job dirs (`ScanJobs`) as a fallback —
@@ -372,6 +380,8 @@ Bucket sub-headers and dots are color-coded and kept in sync.
   | `list.nameColReserve` | 18 | columns kept for the status/age columns |
   | `list.statusTTLMs` | 6000 | how long a footer note lingers |
   | `list.minRefreshMs` | 250 | floor between refreshes (guards a hot spin) |
+  | `list.idleAfterMs` | 60000 | no keypress for this long → idle poll backoff (0 disables) |
+  | `list.idleRefreshMs` | 10000 | poll interval while idle; any key wakes instantly (`zzz` shows in the header) |
   | `picker.maxDepth` | 8 | how deep the dir-picker walk descends |
   | `timeouts.commandMs` | 25000 | one-shot claude invocations (create/fork/clone) |
   | `colors.*` | see below | the palette, by role |

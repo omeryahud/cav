@@ -5,9 +5,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -64,10 +67,11 @@ const (
 // messages
 type (
 	refreshResult struct {
-		sessions []claude.Session
-		roster   claude.Roster
-		states   map[string]string
-		live     map[string]bool // sessionIds with a live daemon worker (vs on-disk only)
+		sessions  []claude.Session
+		roster    claude.Roster
+		states    map[string]string
+		live      map[string]bool // sessionIds with a live daemon worker (vs on-disk only)
+		otherCavs int             // other running cav processes (forgotten instances burn polls)
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
@@ -155,7 +159,9 @@ type Model struct {
 	prevAt        time.Time         // last preview (re)load time, to throttle background reloads
 
 	refreshes chan refreshResult // continuous background refresh results (see refreshLoop)
+	act       *activity          // last-keypress tracker driving the idle poll backoff
 
+	otherCavs  int // other cav processes seen by the last refresh (header warning)
 	status     string
 	statusPrev string    // last status seen by the refresh loop (expiry tracking)
 	statusSeen time.Time // when statusPrev was first seen (expires after statusTTL)
@@ -216,7 +222,8 @@ func New(opts Options) (*Model, error) {
 // id, and the refresh that first sees it highlights or attaches).
 func (m *Model) Init() tea.Cmd {
 	m.refreshes = make(chan refreshResult)
-	go refreshLoop(m.refreshes, m.cfg.List.MinRefresh)
+	m.act = newActivity()
+	go refreshLoop(m.refreshes, m.cfg.List, m.act)
 	if m.initNewDir != "" {
 		return tea.Batch(waitRefresh(m.refreshes),
 			createCmd(m.initNewDir, m.initNewName, "", m.cfg.NewSession, m.cfg.Timeouts.Command))
@@ -294,23 +301,96 @@ func doRefresh() refreshResult {
 		seen[j.SessionID] = true
 	}
 
-	return refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet}
+	return refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet, otherCavs: countOtherCavs()}
+}
+
+// activity tracks the last user input, shared between the update loop (which
+// stamps it on every keypress) and refreshLoop (which reads it to decide
+// whether to back off). wake interrupts an in-progress idle sleep so the first
+// key after a nap gets a refresh immediately, not up to idleRefresh later.
+type activity struct {
+	last atomic.Int64 // unix ms of the last user keypress
+	wake chan struct{}
+}
+
+func newActivity() *activity {
+	a := &activity{wake: make(chan struct{}, 1)}
+	a.touch()
+	return a
+}
+
+func (a *activity) touch() {
+	a.last.Store(time.Now().UnixMilli())
+	select {
+	case a.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (a *activity) sinceInput() time.Duration {
+	return time.Since(time.UnixMilli(a.last.Load()))
+}
+
+// idleDelay returns how long the refresh loop should sleep between polls given
+// how long the user has been inactive: 0 while active (poll continuously), the
+// configured idle interval once inactive. IdleAfter 0 disables the backoff.
+func idleDelay(l config.List, sinceInput time.Duration) time.Duration {
+	if l.IdleAfter <= 0 || sinceInput < l.IdleAfter {
+		return 0
+	}
+	return l.IdleRefresh
 }
 
 // refreshLoop runs the session refresh continuously in the background — no fixed
 // poll delay — so the list (status, ages, new sessions) updates as fast as a
 // refresh completes (~0.5s, bounded by `claude agents --json`). minRefresh is a
 // small floor that only matters if a refresh returns very fast (e.g. the daemon
-// is down), to avoid a hot spin.
-func refreshLoop(ch chan<- refreshResult, minRefresh time.Duration) {
+// is down), to avoid a hot spin. Once the user has been inactive for
+// l.IdleAfter, the loop naps l.IdleRefresh between polls — a forgotten cav
+// costs ~nothing instead of a continuous poll — and any keypress wakes it
+// instantly via act.wake.
+func refreshLoop(ch chan<- refreshResult, l config.List, act *activity) {
 	for {
 		start := time.Now()
 		rr := doRefresh()
-		if d := time.Since(start); d < minRefresh {
-			time.Sleep(minRefresh - d)
+		if d := time.Since(start); d < l.MinRefresh {
+			time.Sleep(l.MinRefresh - d)
 		}
 		ch <- rr
+		if delay := idleDelay(l, act.sinceInput()); delay > 0 {
+			select {
+			case <-act.wake: // drain a token left over from the active period
+			default:
+			}
+			// Re-check after the drain: a keypress racing it deposited the very
+			// token we just ate, but it also stamped last — so this catches it.
+			if idleDelay(l, act.sinceInput()) > 0 {
+				select {
+				case <-time.After(delay):
+				case <-act.wake:
+				}
+			}
+		}
 	}
+}
+
+// countOtherCavs reports how many other cav processes are running — forgotten
+// instances in stale terminals each poll the daemon, which is the single
+// biggest claude-related power draw measured on this machine. Shown as a
+// header warning so they get noticed and quit.
+func countOtherCavs() int {
+	out, err := exec.Command("pgrep", "-x", "cav").Output()
+	if err != nil {
+		return 0 // pgrep exits 1 when nothing matches
+	}
+	me := os.Getpid()
+	n := 0
+	for _, f := range strings.Fields(string(out)) {
+		if pid, err := strconv.Atoi(f); err == nil && pid != me {
+			n++
+		}
+	}
+	return n
 }
 
 // waitRefresh delivers the next background refresh result to the update loop.

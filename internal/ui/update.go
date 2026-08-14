@@ -25,6 +25,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshResult:
 		m.all = msg.sessions
 		m.roster = msg.roster
+		m.otherCavs = msg.otherCavs
 		m.states = msg.states
 		m.live = msg.live
 		// Expire the footer status note once it has sat unchanged for a while —
@@ -188,6 +189,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Any keypress marks the user active: stamps the idle-backoff clock and
+	// wakes the refresh loop if it was napping.
+	if m.act != nil {
+		m.act.touch()
+	}
 	switch m.mode {
 	case modeFilter:
 		return m.handleFilterKey(msg)

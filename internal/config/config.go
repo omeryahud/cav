@@ -71,6 +71,8 @@ type List struct {
 	NameColReserve int           // columns kept for the status/age columns
 	StatusTTL      time.Duration // how long a footer note lingers before clearing
 	MinRefresh     time.Duration // floor between refreshes, guards a hot spin
+	IdleAfter      time.Duration // no keypress for this long -> idle backoff (0 disables)
+	IdleRefresh    time.Duration // poll interval while idle (any key wakes instantly)
 }
 
 // Picker covers the new-session directory picker.
@@ -132,6 +134,8 @@ func Defaults() Config {
 			NameColReserve: 18,
 			StatusTTL:      6 * time.Second,
 			MinRefresh:     250 * time.Millisecond,
+			IdleAfter:      60 * time.Second,
+			IdleRefresh:    10 * time.Second,
 		},
 		Picker:   Picker{MaxDepth: 8},
 		Timeouts: Timeouts{Command: 25 * time.Second},
@@ -186,6 +190,8 @@ type listFile struct {
 	NameColReserve *int `json:"nameColReserve"`
 	StatusTTLMs    *int `json:"statusTTLMs"`
 	MinRefreshMs   *int `json:"minRefreshMs"`
+	IdleAfterMs    *int `json:"idleAfterMs"`
+	IdleRefreshMs  *int `json:"idleRefreshMs"`
 }
 
 type pickerFile struct {
@@ -387,6 +393,13 @@ func (l *loader) applyList(dst *List, c *listFile) {
 	l.setInt(&dst.NameColReserve, c.NameColReserve, "list.nameColReserve", 8)
 	l.setMs(&dst.StatusTTL, c.StatusTTLMs, "list.statusTTLMs", 500)
 	l.setMs(&dst.MinRefresh, c.MinRefreshMs, "list.minRefreshMs", 50)
+	// idleAfterMs: 0 is a real value — it disables the idle backoff entirely.
+	if v := c.IdleAfterMs; v != nil && *v == 0 {
+		dst.IdleAfter = 0
+	} else {
+		l.setMs(&dst.IdleAfter, c.IdleAfterMs, "list.idleAfterMs", 5000)
+	}
+	l.setMs(&dst.IdleRefresh, c.IdleRefreshMs, "list.idleRefreshMs", 1000)
 }
 
 func (l *loader) applyColors(dst *Colors, c *colorsFile) {

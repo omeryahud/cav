@@ -86,6 +86,43 @@ func TestUnknownKeysIgnored(t *testing.T) {
 	}
 }
 
+func TestIdleBackoffKeys(t *testing.T) {
+	withConfig(t, "")
+	cfg, _ := Load()
+	if cfg.List.IdleAfter != 60*time.Second || cfg.List.IdleRefresh != 10*time.Second {
+		t.Errorf("defaults = %v/%v, want 60s/10s", cfg.List.IdleAfter, cfg.List.IdleRefresh)
+	}
+
+	withConfig(t, `{"list": {"idleAfterMs": 30000, "idleRefreshMs": 5000}}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.List.IdleAfter != 30*time.Second || cfg.List.IdleRefresh != 5*time.Second {
+		t.Errorf("override = %v/%v, want 30s/5s", cfg.List.IdleAfter, cfg.List.IdleRefresh)
+	}
+
+	// 0 disables the backoff — a real value, not "unset".
+	withConfig(t, `{"list": {"idleAfterMs": 0}}`)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("idleAfterMs 0 should be accepted, got %v", err)
+	}
+	if cfg.List.IdleAfter != 0 {
+		t.Errorf("IdleAfter = %v, want 0 (disabled)", cfg.List.IdleAfter)
+	}
+
+	// Below-minimum values are rejected and keep the default.
+	withConfig(t, `{"list": {"idleAfterMs": 100, "idleRefreshMs": 10}}`)
+	cfg, err = Load()
+	if err == nil {
+		t.Fatal("sub-minimum idle values should be reported")
+	}
+	if cfg.List.IdleAfter != 60*time.Second || cfg.List.IdleRefresh != 10*time.Second {
+		t.Errorf("rejected values should keep defaults, got %v/%v", cfg.List.IdleAfter, cfg.List.IdleRefresh)
+	}
+}
+
 func TestNewSessionDefaultsAndOverride(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()

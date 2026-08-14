@@ -229,6 +229,12 @@ func (m *Model) indicators() string {
 	if m.previewOn && m.width < m.cfg.Preview.MinWidth {
 		parts = append(parts, "preview:too-narrow")
 	}
+	if m.act != nil && idleDelay(m.cfg.List, m.act.sinceInput()) > 0 {
+		parts = append(parts, "zzz")
+	}
+	if m.otherCavs > 0 {
+		parts = append(parts, fmt.Sprintf("%d other cavs running", m.otherCavs))
+	}
 	return strings.Join(parts, "  ")
 }
 
