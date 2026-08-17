@@ -249,7 +249,16 @@ visible at a glance.
     session in a **split of the same window** (`split-window -h -l
     attach.paneSize`, default 75% — cav keeps rendering alongside at reduced
     width and re-expands when the pane closes; `watchPaneCmd` polls the pane id
-    for the callback), and `"switch"` uses a disposable session
+    for the callback). Pane/scratch closes are **instant on ←** via
+    `armFastClose`: detaching makes `claude attach` run multi-second cleanup
+    flushes before exiting, so a `pipe-pane` byte-matcher (perl `sysread`, not
+    grep — the sequence has no trailing newline) watches for the
+    leave-alt-screen `ESC[?1049l` that starts every detach and `kill-pane`s
+    right there. Two embedding traps in that trigger: tmux format-expands the
+    pipe command (a lone `%` in the pane id gets eaten — escape as `%%`), and
+    pipe jobs run without `$TMUX` (address the server by explicit socket,
+    `tmux -S`). `remain-on-exit off` is forced per pane so a lingering dead
+    pane can't wedge the watcher. And `"switch"` uses a disposable session
     (`cav-scratch-<jobId>`, `detach-on-destroy off`) with `switch-client` and
     `watchScratchCmd` polling `has-session`. Any scratch/popup/pane failure
     surfaces and the classic handoff below still works.

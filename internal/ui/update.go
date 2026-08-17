@@ -573,7 +573,36 @@ func (m *Model) paneAttachCmd(jobID, title, note string, live bool) tea.Cmd {
 		m.err = fmt.Errorf("tmux pane: %v: %s", err, strings.TrimSpace(string(out)))
 		return nil
 	}
-	return watchPaneCmd(strings.TrimSpace(string(out)), note, jobID)
+	paneID := strings.TrimSpace(string(out))
+	armFastClose(paneID)
+	return watchPaneCmd(paneID, note, jobID)
+}
+
+// armFastClose makes ← close an attach pane instantly. Detaching makes
+// `claude attach` run multi-second cleanup flushes before it exits, so waiting
+// for the process leaves the pane hanging dead for seconds. The moment the
+// detach starts, though, the client leaves the alternate screen — so a
+// pipe-pane trigger on ESC[?1049l kills the pane right there. Hard-killing
+// the client is safe (the session's worker is daemon-side, same guarantee the
+// ←-watchdog relies on), and its stray terminal replies die with the pane's
+// tty, nowhere near cav's. remain-on-exit is forced off so a dead pane can't
+// linger and wedge the watcher under configs that keep panes around.
+func armFastClose(paneID string) {
+	_ = exec.Command("tmux", "set-option", "-p", "-t", paneID, "remain-on-exit", "off").Run()
+	// Byte-oriented matcher, not grep: the escape sequence arrives with no
+	// trailing newline, and a line-based reader would sit on the partial line
+	// until EOF — exactly the wait this exists to remove. sysread returns on
+	// whatever bytes are available; the 7-byte tail survives chunk boundaries.
+	// Two embedding traps: the pipe command string is format-expanded by tmux,
+	// which eats a single "%" (escape the pane id as "%%N"), and the pipe job
+	// runs without $TMUX, so a bare `tmux` would talk to the default server —
+	// address ours explicitly via the socket path from cav's own $TMUX.
+	esc := func(s string) string { return strings.ReplaceAll(s, "%", "%%") }
+	sock := strings.SplitN(os.Getenv("TMUX"), ",", 2)[0]
+	trigger := `perl -e 'while (sysread(STDIN, my $b, 1024)) { $t .= $b; ` +
+		`if (index($t, "\x1b[?1049l") >= 0) { system("tmux", "-S", "` + esc(sock) + `", "kill-pane", "-t", "` + esc(paneID) + `"); exit 0 } ` +
+		`$t = substr($t, -7); }'`
+	_ = exec.Command("tmux", "pipe-pane", "-t", paneID, trigger).Run()
 }
 
 // watchPaneCmd resolves once the session pane is gone — the pane-style
@@ -602,7 +631,7 @@ func (m *Model) openInTmuxScratch(jobID, title, note string, live bool) tea.Cmd 
 	}
 	name := "cav-scratch-" + jobID
 	_ = exec.Command("tmux", "kill-session", "-t", name).Run() // stale leftover from a crash
-	args := []string{"new-session", "-d", "-s", name}
+	args := []string{"new-session", "-d", "-s", name, "-P", "-F", "#{pane_id}"}
 	// The scratch inherits the tmux *server's* environment, which can differ
 	// from cav's (e.g. under a test harness). Pass through the vars that shape
 	// what the wrapper and claude see, alongside the CAV_* script vars.
@@ -615,10 +644,12 @@ func (m *Model) openInTmuxScratch(jobID, title, note string, live bool) tea.Cmd 
 		args = append(args, "-e", kv)
 	}
 	args = append(args, "sh", "-c", script)
-	if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil {
+	out, err := exec.Command("tmux", args...).CombinedOutput()
+	if err != nil {
 		m.err = fmt.Errorf("tmux scratch: %v: %s", err, out)
 		return nil
 	}
+	armFastClose(strings.TrimSpace(string(out))) // ← closes the scratch instantly too
 	// Without this, a session dying under an attached client would detach the
 	// client entirely instead of returning it to cav.
 	_ = exec.Command("tmux", "set-option", "-t", name, "detach-on-destroy", "off").Run()
