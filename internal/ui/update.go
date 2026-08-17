@@ -474,6 +474,12 @@ func (m *Model) openCurrent() tea.Cmd {
 	// attach, the scratch dies, tmux switches back) is instant — no suspend, no
 	// alt-screen re-entry, no repaint.
 	if m.cfg.Attach.TmuxScratch && os.Getenv("TMUX") != "" {
+		if m.cfg.Attach.TmuxStyle == "popup" {
+			// Floating popup over cav (the scratch-pad pattern): display-popup -E
+			// blocks until the attach ends and closing it IS the return — cav was
+			// rendering beneath the whole time. No watcher needed.
+			return m.popupAttachCmd(id, label, note, live)
+		}
 		if watch := m.openInTmuxScratch(id, label, note, live); watch != nil {
 			return watch
 		}
@@ -490,6 +496,44 @@ func (m *Model) openCurrent() tea.Cmd {
 		// resuming forces cursor 0) and let the next refresh move the cursor to it.
 		return actionMsg{note: note, selectJob: id}
 	})
+}
+
+// popupAttachCmd runs the watchdog attach inside a floating tmux popup over
+// cav (tmux display-popup -E): keys go to the popup, cav keeps rendering
+// beneath, and when the attach ends (← kills the relaunched view, ctrl+z, or
+// a normal exit) the popup closes — the return is instant because nothing was
+// suspended. The command blocks in a goroutine until then, so its return IS
+// the exit callback. A popup that fails to open (e.g. cav itself is inside a
+// popup — tmux won't nest them) surfaces the error with a hint.
+func (m *Model) popupAttachCmd(jobID, title, note string, live bool) tea.Cmd {
+	script, env := claude.AttachShell(jobID, title)
+	if !live {
+		script, env = claude.ResumeAttachShell(jobID, title)
+	}
+	args := []string{"display-popup", "-E",
+		"-w", m.cfg.Attach.PopupWidth, "-h", m.cfg.Attach.PopupHeight,
+		"-T", " " + title + " "}
+	// The popup inherits the tmux *server's* environment, which can differ from
+	// cav's; pass through what the wrapper and claude need (see openInTmuxScratch).
+	for _, k := range []string{"HOME", "XDG_CONFIG_HOME", "CLAUDE_BIN", "PATH"} {
+		if v, ok := os.LookupEnv(k); ok {
+			args = append(args, "-e", k+"="+v)
+		}
+	}
+	for _, kv := range env {
+		args = append(args, "-e", kv)
+	}
+	args = append(args, "sh", "-c", script)
+	start := time.Now()
+	return func() tea.Msg {
+		if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil && time.Since(start) < 2*time.Second {
+			// Failed to open at all (vs. the attach running and ending) — report,
+			// with the likeliest cause called out.
+			return actionMsg{err: fmt.Errorf("tmux popup: %v: %s (popups can't nest; set attach.tmuxStyle to \"switch\" if cav runs inside one)",
+				err, strings.TrimSpace(string(out)))}
+		}
+		return actionMsg{note: note, selectJob: jobID}
+	}
 }
 
 // openInTmuxScratch runs the watchdog attach inside a throwaway tmux session

@@ -92,10 +92,18 @@ func TestAttachTmuxScratch(t *testing.T) {
 	if !cfg.Attach.TmuxScratch {
 		t.Error("tmuxScratch should default on")
 	}
-	withConfig(t, `{"attach": {"tmuxScratch": false}}`)
+	if cfg.Attach.TmuxStyle != "popup" || cfg.Attach.PopupWidth != "100%" || cfg.Attach.PopupHeight != "100%" {
+		t.Errorf("style defaults = %+v", cfg.Attach)
+	}
+	withConfig(t, `{"attach": {"tmuxScratch": false, "tmuxStyle": "switch", "popupWidth": "80%", "popupHeight": "90%"}}`)
 	cfg, err := Load()
-	if err != nil || cfg.Attach.TmuxScratch {
+	if err != nil || cfg.Attach.TmuxScratch || cfg.Attach.TmuxStyle != "switch" || cfg.Attach.PopupWidth != "80%" {
 		t.Errorf("override failed: %+v err=%v", cfg.Attach, err)
+	}
+	withConfig(t, `{"attach": {"tmuxStyle": "hologram"}}`)
+	cfg, err = Load()
+	if err == nil || cfg.Attach.TmuxStyle != "popup" {
+		t.Errorf("invalid style should be rejected keeping popup, got %+v err=%v", cfg.Attach, err)
 	}
 }
 

@@ -58,10 +58,16 @@ type NewSession struct {
 // Attach covers how sessions are opened.
 type Attach struct {
 	// TmuxScratch: when cav itself runs inside tmux, open sessions in a
-	// disposable tmux session and switch-client to it — cav keeps rendering in
-	// the background, so stepping out (←) returns instantly. Outside tmux the
-	// classic full-terminal handoff is used regardless.
+	// floating popup (or scratch session) instead of suspending cav — it keeps
+	// rendering in the background, so stepping out (←) returns instantly.
+	// Outside tmux the classic full-terminal handoff is used regardless.
 	TmuxScratch bool
+	// TmuxStyle picks the scratch flavor: "popup" (a floating window over cav,
+	// tmux display-popup) or "switch" (a separate session via switch-client).
+	TmuxStyle string
+	// Popup size, as tmux size specs (percentages or absolute columns/rows).
+	PopupWidth  string
+	PopupHeight string
 }
 
 // Preview covers the right-hand pane.
@@ -139,7 +145,7 @@ func Defaults() Config {
 		ProjectRoot: filepath.Join(home, "go", "src", "github.com", "omeryahud"),
 		ClaudeBin:   "claude",
 		NewSession:  NewSession{Model: "fable", Effort: "max"},
-		Attach:      Attach{TmuxScratch: true},
+		Attach:      Attach{TmuxScratch: true, TmuxStyle: "popup", PopupWidth: "100%", PopupHeight: "100%"},
 		Preview: Preview{
 			MinWidth:      100,
 			WidthPercent:  50,
@@ -228,7 +234,10 @@ type pickerFile struct {
 }
 
 type attachFile struct {
-	TmuxScratch *bool `json:"tmuxScratch"`
+	TmuxScratch *bool   `json:"tmuxScratch"`
+	TmuxStyle   *string `json:"tmuxStyle"`
+	PopupWidth  *string `json:"popupWidth"`
+	PopupHeight *string `json:"popupHeight"`
 }
 
 type newSessFile struct {
@@ -314,8 +323,18 @@ func Load() (Config, error) {
 	if f.ClaudeBin != nil && *f.ClaudeBin != "" {
 		cfg.ClaudeBin = *f.ClaudeBin
 	}
-	if a := f.Attach; a != nil && a.TmuxScratch != nil {
-		cfg.Attach.TmuxScratch = *a.TmuxScratch
+	if a := f.Attach; a != nil {
+		if a.TmuxScratch != nil {
+			cfg.Attach.TmuxScratch = *a.TmuxScratch
+		}
+		l.setEnum(&cfg.Attach.TmuxStyle, a.TmuxStyle, "attach.tmuxStyle",
+			[]string{"popup", "switch"}, "(want popup|switch)")
+		if v := a.PopupWidth; v != nil && *v != "" {
+			cfg.Attach.PopupWidth = *v
+		}
+		if v := a.PopupHeight; v != nil && *v != "" {
+			cfg.Attach.PopupHeight = *v
+		}
 	}
 	if n := f.NewSession; n != nil {
 		// An explicit "" is meaningful here: it means "don't pass the flag", so
