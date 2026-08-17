@@ -245,11 +245,14 @@ visible at a glance.
     (`←`, ctrl+z, exit) the popup closes — **instant return, no repaint**. The
     popup command blocks in a goroutine, so its return IS the exit callback
     (back-note + re-highlight). Popups can't nest: if cav itself runs inside a
-    popup, set `attach.tmuxStyle: "switch"` — that flavor uses a disposable
-    session (`cav-scratch-<jobId>`, `detach-on-destroy off`) and
-    `switch-client`, with `watchScratchCmd` polling `has-session` to fire the
-    callback. Any scratch/popup failure surfaces and the classic handoff below
-    still works.
+    popup, pick another flavor via `attach.tmuxStyle`: `"pane"` opens the
+    session in a **split of the same window** (`split-window -h -l
+    attach.paneSize`, default 75% — cav keeps rendering alongside at reduced
+    width and re-expands when the pane closes; `watchPaneCmd` polls the pane id
+    for the callback), and `"switch"` uses a disposable session
+    (`cav-scratch-<jobId>`, `detach-on-destroy off`) with `switch-client` and
+    `watchScratchCmd` polling `has-session`. Any scratch/popup/pane failure
+    surfaces and the classic handoff below still works.
   - **Outside tmux** (or scratch disabled): a live worker hands the current
     terminal to `claude attach <jobId>` via `tea.ExecProcess`; on exit, cav
     resumes in place. You can't attach to a session already attached elsewhere
@@ -409,8 +412,9 @@ visible at a glance.
   | `picker.maxDepth` | 8 | how deep the dir-picker walk descends |
   | `timeouts.commandMs` | 25000 | one-shot claude invocations (create/fork/clone) |
   | `attach.tmuxScratch` | `true` | inside tmux, open sessions without suspending cav (instant ← return) |
-  | `attach.tmuxStyle` | `popup` | scratch flavor: `popup` (floating over cav) \| `switch` (separate session) |
+  | `attach.tmuxStyle` | `popup` | scratch flavor: `popup` (floating over cav) \| `pane` (split in the same window) \| `switch` (separate session) |
   | `attach.popupWidth` / `popupHeight` | `100%` | popup size (tmux size specs) |
+  | `attach.paneSize` | `75%` | the session pane's share of the window (`pane` style) |
   | `colors.*` | see below | the palette, by role |
 
   **Colors** take an ANSI 256 index (`42`) or a hex string (`"#5fd700"`); text

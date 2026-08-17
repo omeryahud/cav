@@ -100,6 +100,16 @@ func TestAttachTmuxScratch(t *testing.T) {
 	if err != nil || cfg.Attach.TmuxScratch || cfg.Attach.TmuxStyle != "switch" || cfg.Attach.PopupWidth != "80%" {
 		t.Errorf("override failed: %+v err=%v", cfg.Attach, err)
 	}
+	withConfig(t, `{"attach": {"tmuxStyle": "pane", "paneSize": "60%"}}`)
+	cfg, err = Load()
+	if err != nil || cfg.Attach.TmuxStyle != "pane" || cfg.Attach.PaneSize != "60%" {
+		t.Errorf("pane style: %+v err=%v", cfg.Attach, err)
+	}
+	withConfig(t, "")
+	cfg, _ = Load()
+	if cfg.Attach.PaneSize != "75%" {
+		t.Errorf("paneSize default = %q, want 75%%", cfg.Attach.PaneSize)
+	}
 	withConfig(t, `{"attach": {"tmuxStyle": "hologram"}}`)
 	cfg, err = Load()
 	if err == nil || cfg.Attach.TmuxStyle != "popup" {

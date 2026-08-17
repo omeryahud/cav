@@ -63,11 +63,14 @@ type Attach struct {
 	// Outside tmux the classic full-terminal handoff is used regardless.
 	TmuxScratch bool
 	// TmuxStyle picks the scratch flavor: "popup" (a floating window over cav,
-	// tmux display-popup) or "switch" (a separate session via switch-client).
+	// tmux display-popup), "pane" (a split in the same window, cav stays
+	// alongside), or "switch" (a separate session via switch-client).
 	TmuxStyle string
 	// Popup size, as tmux size specs (percentages or absolute columns/rows).
 	PopupWidth  string
 	PopupHeight string
+	// Pane size for the "pane" style (the session pane's share of the window).
+	PaneSize string
 }
 
 // Preview covers the right-hand pane.
@@ -145,7 +148,7 @@ func Defaults() Config {
 		ProjectRoot: filepath.Join(home, "go", "src", "github.com", "omeryahud"),
 		ClaudeBin:   "claude",
 		NewSession:  NewSession{Model: "fable", Effort: "max"},
-		Attach:      Attach{TmuxScratch: true, TmuxStyle: "popup", PopupWidth: "100%", PopupHeight: "100%"},
+		Attach:      Attach{TmuxScratch: true, TmuxStyle: "popup", PopupWidth: "100%", PopupHeight: "100%", PaneSize: "75%"},
 		Preview: Preview{
 			MinWidth:      100,
 			WidthPercent:  50,
@@ -238,6 +241,7 @@ type attachFile struct {
 	TmuxStyle   *string `json:"tmuxStyle"`
 	PopupWidth  *string `json:"popupWidth"`
 	PopupHeight *string `json:"popupHeight"`
+	PaneSize    *string `json:"paneSize"`
 }
 
 type newSessFile struct {
@@ -328,12 +332,15 @@ func Load() (Config, error) {
 			cfg.Attach.TmuxScratch = *a.TmuxScratch
 		}
 		l.setEnum(&cfg.Attach.TmuxStyle, a.TmuxStyle, "attach.tmuxStyle",
-			[]string{"popup", "switch"}, "(want popup|switch)")
+			[]string{"popup", "pane", "switch"}, "(want popup|pane|switch)")
 		if v := a.PopupWidth; v != nil && *v != "" {
 			cfg.Attach.PopupWidth = *v
 		}
 		if v := a.PopupHeight; v != nil && *v != "" {
 			cfg.Attach.PopupHeight = *v
+		}
+		if v := a.PaneSize; v != nil && *v != "" {
+			cfg.Attach.PaneSize = *v
 		}
 	}
 	if n := f.NewSession; n != nil {

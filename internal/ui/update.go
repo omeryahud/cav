@@ -474,14 +474,22 @@ func (m *Model) openCurrent() tea.Cmd {
 	// attach, the scratch dies, tmux switches back) is instant — no suspend, no
 	// alt-screen re-entry, no repaint.
 	if m.cfg.Attach.TmuxScratch && os.Getenv("TMUX") != "" {
-		if m.cfg.Attach.TmuxStyle == "popup" {
+		switch m.cfg.Attach.TmuxStyle {
+		case "popup":
 			// Floating popup over cav (the scratch-pad pattern): display-popup -E
 			// blocks until the attach ends and closing it IS the return — cav was
 			// rendering beneath the whole time. No watcher needed.
 			return m.popupAttachCmd(id, label, note, live)
-		}
-		if watch := m.openInTmuxScratch(id, label, note, live); watch != nil {
-			return watch
+		case "pane":
+			// Split pane in the same window: cav stays alongside at reduced
+			// width; the session pane closes on exit and cav re-expands.
+			if watch := m.paneAttachCmd(id, label, note, live); watch != nil {
+				return watch
+			}
+		default:
+			if watch := m.openInTmuxScratch(id, label, note, live); watch != nil {
+				return watch
+			}
 		}
 		// Scratch setup failed (error already surfaced) — fall through to the
 		// classic handoff so the session still opens.
@@ -533,6 +541,52 @@ func (m *Model) popupAttachCmd(jobID, title, note string, live bool) tea.Cmd {
 				err, strings.TrimSpace(string(out)))}
 		}
 		return actionMsg{note: note, selectJob: jobID}
+	}
+}
+
+// paneAttachCmd runs the watchdog attach in a new pane splitting cav's own
+// window — the session takes attach.paneSize (default 75%) on the right, cav
+// keeps rendering alongside (it just gets narrower; a resize message follows
+// naturally). Focus moves to the session pane; when the attach ends the pane
+// closes, cav re-expands, and the watcher fires the back-note + re-highlight.
+// Returns nil if the split failed (error surfaced; caller falls back).
+func (m *Model) paneAttachCmd(jobID, title, note string, live bool) tea.Cmd {
+	script, env := claude.AttachShell(jobID, title)
+	if !live {
+		script, env = claude.ResumeAttachShell(jobID, title)
+	}
+	args := []string{"split-window", "-h", "-l", m.cfg.Attach.PaneSize, "-P", "-F", "#{pane_id}"}
+	if p := os.Getenv("TMUX_PANE"); p != "" {
+		args = append(args, "-t", p) // split cav's own pane, wherever focus is
+	}
+	for _, k := range []string{"HOME", "XDG_CONFIG_HOME", "CLAUDE_BIN", "PATH"} {
+		if v, ok := os.LookupEnv(k); ok {
+			args = append(args, "-e", k+"="+v)
+		}
+	}
+	for _, kv := range env {
+		args = append(args, "-e", kv)
+	}
+	args = append(args, "sh", "-c", script)
+	out, err := exec.Command("tmux", args...).CombinedOutput()
+	if err != nil {
+		m.err = fmt.Errorf("tmux pane: %v: %s", err, strings.TrimSpace(string(out)))
+		return nil
+	}
+	return watchPaneCmd(strings.TrimSpace(string(out)), note, jobID)
+}
+
+// watchPaneCmd resolves once the session pane is gone — the pane-style
+// analogue of the ExecProcess exit callback.
+func watchPaneCmd(paneID, note, jobID string) tea.Cmd {
+	return func() tea.Msg {
+		for {
+			out, err := exec.Command("tmux", "display", "-p", "-t", paneID, "#{pane_id}").Output()
+			if err != nil || strings.TrimSpace(string(out)) != paneID {
+				return actionMsg{note: note, selectJob: jobID}
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
 }
 
