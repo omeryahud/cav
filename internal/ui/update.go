@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -458,10 +460,7 @@ func (m *Model) openCurrent() tea.Cmd {
 	// errors ("job not found" / "not known to the daemon"). Respawn it first
 	// (same job id, from the stored respawn flags), then attach — exactly what
 	// the native agents view does.
-	cmd := claude.AttachCmd(id, label) // label doubles as the terminal title while attached
-	if !m.live[s.SessionID] {
-		cmd = claude.ResumeAttachCmd(id, label)
-	}
+	live := m.live[s.SessionID]
 	if m.stoppedView {
 		// Resuming leaves the stopped window; the post-attach refresh reclassifies
 		// the now-active session into the main one.
@@ -470,12 +469,81 @@ func (m *Model) openCurrent() tea.Cmd {
 		m.recompute()
 		note = "↩ resumed " + label
 	}
+	// Inside tmux, open in a disposable scratch session and switch the client to
+	// it: cav keeps rendering in the background, so stepping out (← ends the
+	// attach, the scratch dies, tmux switches back) is instant — no suspend, no
+	// alt-screen re-entry, no repaint.
+	if m.cfg.Attach.TmuxScratch && os.Getenv("TMUX") != "" {
+		if watch := m.openInTmuxScratch(id, label, note, live); watch != nil {
+			return watch
+		}
+		// Scratch setup failed (error already surfaced) — fall through to the
+		// classic handoff so the session still opens.
+	}
+	cmd := claude.AttachCmd(id, label) // label doubles as the terminal title while attached
+	if !live {
+		cmd = claude.ResumeAttachCmd(id, label)
+	}
 	return tea.ExecProcess(cmd, func(error) tea.Msg {
 		// Highlight the session we just stepped out of: hold its job id (not the
 		// list index, which drifts as the list reorders — attaching flips it busy,
 		// resuming forces cursor 0) and let the next refresh move the cursor to it.
 		return actionMsg{note: note, selectJob: id}
 	})
+}
+
+// openInTmuxScratch runs the watchdog attach inside a throwaway tmux session
+// (cav-scratch-<job>) and switches this client to it. detach-on-destroy off on
+// the scratch means tmux switches the client straight back here when the attach
+// ends — cav never suspended. Returns the watcher command that fires the
+// back-note once the scratch is gone, or nil if setup failed.
+func (m *Model) openInTmuxScratch(jobID, title, note string, live bool) tea.Cmd {
+	script, env := claude.AttachShell(jobID, title)
+	if !live {
+		script, env = claude.ResumeAttachShell(jobID, title)
+	}
+	name := "cav-scratch-" + jobID
+	_ = exec.Command("tmux", "kill-session", "-t", name).Run() // stale leftover from a crash
+	args := []string{"new-session", "-d", "-s", name}
+	// The scratch inherits the tmux *server's* environment, which can differ
+	// from cav's (e.g. under a test harness). Pass through the vars that shape
+	// what the wrapper and claude see, alongside the CAV_* script vars.
+	for _, k := range []string{"HOME", "XDG_CONFIG_HOME", "CLAUDE_BIN", "PATH"} {
+		if v, ok := os.LookupEnv(k); ok {
+			args = append(args, "-e", k+"="+v)
+		}
+	}
+	for _, kv := range env {
+		args = append(args, "-e", kv)
+	}
+	args = append(args, "sh", "-c", script)
+	if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil {
+		m.err = fmt.Errorf("tmux scratch: %v: %s", err, out)
+		return nil
+	}
+	// Without this, a session dying under an attached client would detach the
+	// client entirely instead of returning it to cav.
+	_ = exec.Command("tmux", "set-option", "-t", name, "detach-on-destroy", "off").Run()
+	if out, err := exec.Command("tmux", "switch-client", "-t", name).CombinedOutput(); err != nil {
+		// The scratch is running but this client couldn't switch (rare). Leave a
+		// pointer instead of failing the open.
+		m.status = "attached in tmux session " + name + " (switch failed: " + strings.TrimSpace(string(out)) + ")"
+	}
+	return watchScratchCmd(name, note, jobID)
+}
+
+// watchScratchCmd resolves once the scratch session ends, restoring the
+// back-note and re-highlighting the session — the tmux-path analogue of the
+// ExecProcess exit callback.
+func watchScratchCmd(name, note, jobID string) tea.Cmd {
+	return func() tea.Msg {
+		for {
+			if err := exec.Command("tmux", "has-session", "-t", name).Run(); err != nil {
+				return actionMsg{note: note, selectJob: jobID}
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
 }
 
 func (m *Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

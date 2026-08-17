@@ -86,6 +86,19 @@ func TestUnknownKeysIgnored(t *testing.T) {
 	}
 }
 
+func TestAttachTmuxScratch(t *testing.T) {
+	withConfig(t, "")
+	cfg, _ := Load()
+	if !cfg.Attach.TmuxScratch {
+		t.Error("tmuxScratch should default on")
+	}
+	withConfig(t, `{"attach": {"tmuxScratch": false}}`)
+	cfg, err := Load()
+	if err != nil || cfg.Attach.TmuxScratch {
+		t.Errorf("override failed: %+v err=%v", cfg.Attach, err)
+	}
+}
+
 func TestGroupingKey(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()

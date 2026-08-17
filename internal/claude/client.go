@@ -285,18 +285,34 @@ const attachWatch = `cav_attach() {
 }
 `
 
-// attachEnv is the environment for the attach watchdog shell. title is the
-// session display name shown as the terminal title while attached.
-func attachEnv(jobID, title string) []string {
-	return append(os.Environ(), "CAV_CLAUDE="+Bin(), "CAV_JOB="+jobID, "CAV_TITLE="+title)
+// AttachShell is the sh script (and its extra env pairs) that attaches to a
+// session under the ←-detach watchdog. The two consumers wire it differently:
+// AttachCmd runs it on cav's own terminal via ExecProcess; the tmux-scratch
+// path runs it inside a scratch tmux session (env passed with `tmux -e`).
+func AttachShell(jobID, title string) (script string, env []string) {
+	return attachWatch + `cav_attach "$CAV_JOB"`, attachEnvVars(jobID, title)
+}
+
+// ResumeAttachShell is AttachShell for a stopped/dropped session: respawn
+// first (same job id), then attach.
+func ResumeAttachShell(jobID, title string) (script string, env []string) {
+	return attachWatch + `"$CAV_CLAUDE" respawn "$CAV_JOB" && cav_attach "$CAV_JOB"`,
+		attachEnvVars(jobID, title)
+}
+
+// attachEnvVars is the watchdog script's own environment: the claude binary,
+// the job id, and the terminal title (the session's display name).
+func attachEnvVars(jobID, title string) []string {
+	return []string{"CAV_CLAUDE=" + Bin(), "CAV_JOB=" + jobID, "CAV_TITLE=" + title}
 }
 
 // AttachCmd builds the command to attach to a session (full terminal handoff),
 // watchdogged so an ←-detach returns to cav instead of the native agent view.
 // The terminal title is set to title (the session's display name) while inside.
 func AttachCmd(id, title string) *exec.Cmd {
-	cmd := exec.Command("sh", "-c", attachWatch+`cav_attach "$CAV_JOB"`)
-	cmd.Env = attachEnv(id, title)
+	script, env := AttachShell(id, title)
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), env...)
 	return cmd
 }
 
@@ -312,8 +328,9 @@ func LogsShellCmd(id string) *exec.Cmd {
 // succeeds. The attach runs under the same ←-detach watchdog (and terminal
 // title) as AttachCmd.
 func ResumeAttachCmd(jobID, title string) *exec.Cmd {
-	cmd := exec.Command("sh", "-c", attachWatch+`"$CAV_CLAUDE" respawn "$CAV_JOB" && cav_attach "$CAV_JOB"`)
-	cmd.Env = attachEnv(jobID, title)
+	script, env := ResumeAttachShell(jobID, title)
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), env...)
 	return cmd
 }
 

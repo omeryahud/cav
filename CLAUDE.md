@@ -237,9 +237,20 @@ visible at a glance.
     resets to the bottom whenever the selected session changes.
 - **Open / resume** (`↵` or `→`) branches on whether the session has a **live
   worker** (the `live` set from `doRefresh`):
-  - **Live worker** → hands the current terminal to `claude attach <jobId>` via
-    `tea.ExecProcess`; on exit, cav resumes in place. You can't attach to a session
-    already attached elsewhere (e.g. the one you're typing in).
+  - **Inside tmux** (`$TMUX` set, `attach.tmuxScratch` on — the default), the
+    attach runs in a **disposable tmux session** (`cav-scratch-<jobId>`, created
+    detached with the watchdog script and `detach-on-destroy off`, env passed
+    via `tmux -e`) and the client is `switch-client`ed to it. cav is never
+    suspended — it keeps rendering (and refreshing, throttled by the idle
+    backoff) — so when the attach ends (`←`, ctrl+z, exit) the scratch dies and
+    tmux switches the client straight back: **instant return, no repaint**.
+    `watchScratchCmd` polls `has-session` (500ms) and fires the back-note +
+    re-highlight when the scratch is gone. Any scratch setup failure falls back
+    to the classic handoff below.
+  - **Outside tmux** (or scratch disabled): a live worker hands the current
+    terminal to `claude attach <jobId>` via `tea.ExecProcess`; on exit, cav
+    resumes in place. You can't attach to a session already attached elsewhere
+    (e.g. the one you're typing in).
   - **Stepping out re-highlights that session.** `openCurrent`'s exit callback
     returns `actionMsg{selectJob: jobId}`, which sets `selectJobID` so the next
     refresh moves the cursor onto the session you left — by **job id**, not the
@@ -394,6 +405,7 @@ visible at a glance.
   | `list.grouping` | `status-dir` | startup grouping: `dir-status`\|`status-dir`\|`recent`\|`alphabetical` (`o` cycles from there) |
   | `picker.maxDepth` | 8 | how deep the dir-picker walk descends |
   | `timeouts.commandMs` | 25000 | one-shot claude invocations (create/fork/clone) |
+  | `attach.tmuxScratch` | `true` | inside tmux, open sessions in a scratch tmux session (instant ← return; cav never suspends) |
   | `colors.*` | see below | the palette, by role |
 
   **Colors** take an ANSI 256 index (`42`) or a hex string (`"#5fd700"`); text

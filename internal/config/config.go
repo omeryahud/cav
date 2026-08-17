@@ -38,6 +38,7 @@ type Config struct {
 	ProjectRoot string // where N creates new projects (and the only place it may)
 	ClaudeBin   string // claude executable ($CLAUDE_BIN still wins)
 	NewSession  NewSession
+	Attach      Attach
 	Preview     Preview
 	List        List
 	Picker      Picker
@@ -52,6 +53,15 @@ type Config struct {
 type NewSession struct {
 	Model  string // --model for new sessions
 	Effort string // --effort for new sessions (low|medium|high|xhigh|max)
+}
+
+// Attach covers how sessions are opened.
+type Attach struct {
+	// TmuxScratch: when cav itself runs inside tmux, open sessions in a
+	// disposable tmux session and switch-client to it — cav keeps rendering in
+	// the background, so stepping out (←) returns instantly. Outside tmux the
+	// classic full-terminal handoff is used regardless.
+	TmuxScratch bool
 }
 
 // Preview covers the right-hand pane.
@@ -129,6 +139,7 @@ func Defaults() Config {
 		ProjectRoot: filepath.Join(home, "go", "src", "github.com", "omeryahud"),
 		ClaudeBin:   "claude",
 		NewSession:  NewSession{Model: "fable", Effort: "max"},
+		Attach:      Attach{TmuxScratch: true},
 		Preview: Preview{
 			MinWidth:      100,
 			WidthPercent:  50,
@@ -183,6 +194,7 @@ type file struct {
 	ProjectRoot *string      `json:"projectRoot"`
 	ClaudeBin   *string      `json:"claudeBin"`
 	NewSession  *newSessFile `json:"newSession"`
+	Attach      *attachFile  `json:"attach"`
 	Preview     *previewFile `json:"preview"`
 	List        *listFile    `json:"list"`
 	Picker      *pickerFile  `json:"picker"`
@@ -213,6 +225,10 @@ type listFile struct {
 
 type pickerFile struct {
 	MaxDepth *int `json:"maxDepth"`
+}
+
+type attachFile struct {
+	TmuxScratch *bool `json:"tmuxScratch"`
 }
 
 type newSessFile struct {
@@ -297,6 +313,9 @@ func Load() (Config, error) {
 	}
 	if f.ClaudeBin != nil && *f.ClaudeBin != "" {
 		cfg.ClaudeBin = *f.ClaudeBin
+	}
+	if a := f.Attach; a != nil && a.TmuxScratch != nil {
+		cfg.Attach.TmuxScratch = *a.TmuxScratch
 	}
 	if n := f.NewSession; n != nil {
 		// An explicit "" is meaningful here: it means "don't pass the flag", so
