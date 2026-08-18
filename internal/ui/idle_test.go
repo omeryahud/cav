@@ -74,3 +74,21 @@ func TestGroupingFromConfig(t *testing.T) {
 		}
 	}
 }
+
+// The tmux attach flavors must not yank a cursor the user moved: the
+// re-highlight applies only when no cav keypress landed after the attach began.
+func TestSelectUnlessTouched(t *testing.T) {
+	a := newActivity()
+	start := time.Now().Add(10 * time.Millisecond) // strictly after the opening keypress
+	if got := selectUnlessTouched(a, start, "job1"); got != "job1" {
+		t.Errorf("untouched: got %q, want job1", got)
+	}
+	time.Sleep(20 * time.Millisecond)
+	a.touch() // the user moved the cursor while the session was open
+	if got := selectUnlessTouched(a, start, "job1"); got != "" {
+		t.Errorf("touched: got %q, want empty", got)
+	}
+	if got := selectUnlessTouched(nil, start, "job1"); got != "job1" {
+		t.Errorf("nil activity should fall back to restoring, got %q", got)
+	}
+}

@@ -348,6 +348,14 @@ func (a *activity) sinceInput() time.Duration {
 	return time.Since(time.UnixMilli(a.last.Load()))
 }
 
+// touchedSince reports whether any cav keypress landed after t. The tmux
+// attach flavors use it to decide whether re-highlighting the stepped-out
+// session would yank a cursor the user has since moved — cav stays live in
+// those flavors, unlike the suspended ExecProcess handoff.
+func (a *activity) touchedSince(t time.Time) bool {
+	return a.last.Load() > t.UnixMilli()
+}
+
 // idleDelay returns how long the refresh loop should sleep between polls given
 // how long the user has been inactive: 0 while active (poll continuously), the
 // configured idle interval once inactive. IdleAfter 0 disables the backoff.
