@@ -231,12 +231,11 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 	case "G", "end", "pgdown":
 		m.cursor = lastIndex(len(m.view))
-	case "alt+down":
-		// ±5 jump. Bound to option/alt: macOS terminals own the ⌘ key, so
-		// cmd+arrows never reach a TUI — remap them in the terminal to emit
-		// these sequences (ESC[1;3B / ESC[1;3A) if ⌘ is preferred.
+	case "ctrl+down":
+		// ±5 jump. Bound to ctrl (macOS terminals own the ⌘ key, so cmd+arrows
+		// never reach a TUI — remap them to ESC[1;5B / ESC[1;5A if ⌘ is wanted).
 		m.cursor = clamp(m.cursor+5, 0, lastIndex(len(m.view)))
-	case "alt+up":
+	case "ctrl+up":
 		m.cursor = clamp(m.cursor-5, 0, lastIndex(len(m.view)))
 	case "p":
 		m.previewOn = !m.previewOn

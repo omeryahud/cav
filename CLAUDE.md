@@ -372,8 +372,8 @@ visible at a glance.
   stopped session to the main pane) · `l` logs ·
   `o` group (cycle dir→status / status→dir / recently-entered / alphabetical) ·
   `s` stopped-window toggle · `p` preview · `^u`/`^d` scroll preview ·
-  `pgup`/`pgdn` first/last session · `⌥↑`/`⌥↓` jump 5 (macOS terminals own ⌘,
-  so cmd+arrows can't reach a TUI; remap ⌘↑/⌘↓ to ESC[1;3A / ESC[1;3B in the
+  `pgup`/`pgdn` first/last session · `^↑`/`^↓` jump 5 (macOS terminals own ⌘,
+  so cmd+arrows can't reach a TUI; remap ⌘↑/⌘↓ to ESC[1;5A / ESC[1;5B in the
   terminal to use them) · `/` filter (metadata; **live fuzzy** — type to narrow
   (subsequence match; the dir/status grouping is kept), `↑/↓` (or `ctrl+j/k`)
   move the selection without leaving the prompt, `↵` opens the selected session

@@ -598,7 +598,7 @@ func (m *Model) helpBar() string {
 		{"F", "fork"}, {"C", "clone"},
 		{"d", "remove"}, {"b", "bring back"}, {"x", "stop"}, {"z/Z", "stop idle/all"},
 		{"l", "logs"}, {"o", "group"}, {"s", stopped},
-		{"p", "preview"}, {"^u/^d", "scroll"}, {"⇞/⇟", "top/bottom"}, {"⌥↑/↓", "±5"}, {"/", "filter"}, {"f", "search"},
+		{"p", "preview"}, {"^u/^d", "scroll"}, {"⇞/⇟", "top/bottom"}, {"^↑/↓", "±5"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
 	}
 	parts := make([]string, len(binds))

@@ -109,20 +109,20 @@ func TestListNavKeys(t *testing.T) {
 	if m.cursor != 0 {
 		t.Errorf("pgup: cursor = %d, want 0", m.cursor)
 	}
-	press(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+	press(tea.KeyMsg{Type: tea.KeyCtrlDown})
 	if m.cursor != 5 {
-		t.Errorf("alt+down: cursor = %d, want 5", m.cursor)
+		t.Errorf("ctrl+down: cursor = %d, want 5", m.cursor)
 	}
-	press(tea.KeyMsg{Type: tea.KeyDown, Alt: true}) // clamps at the end
+	press(tea.KeyMsg{Type: tea.KeyCtrlDown}) // clamps at the end
 	if m.cursor != 7 {
-		t.Errorf("alt+down clamp: cursor = %d, want 7", m.cursor)
+		t.Errorf("ctrl+down clamp: cursor = %d, want 7", m.cursor)
 	}
-	press(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+	press(tea.KeyMsg{Type: tea.KeyCtrlUp})
 	if m.cursor != 2 {
-		t.Errorf("alt+up: cursor = %d, want 2", m.cursor)
+		t.Errorf("ctrl+up: cursor = %d, want 2", m.cursor)
 	}
-	press(tea.KeyMsg{Type: tea.KeyUp, Alt: true}) // clamps at the top
+	press(tea.KeyMsg{Type: tea.KeyCtrlUp}) // clamps at the top
 	if m.cursor != 0 {
-		t.Errorf("alt+up clamp: cursor = %d, want 0", m.cursor)
+		t.Errorf("ctrl+up clamp: cursor = %d, want 0", m.cursor)
 	}
 }
