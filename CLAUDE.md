@@ -231,8 +231,8 @@ visible at a glance.
     tabs past the measured width, so an unclipped over-wide line overflows the
     terminal row and shears the whole layout (the "highlight X and the view
     distorts" bug). Don't remove either layer.
-  - **Scrollable:** `ctrl+u`/`ctrl+d` (half page) and `pgup`/`pgdn` (full page)
-    scroll the pane. It's bottom-anchored with an upward offset (`previewScroll`);
+  - **Scrollable:** `ctrl+u`/`ctrl+d` (half page) scroll the pane (`pgup`/`pgdn`
+    now navigate the list instead). It's bottom-anchored with an upward offset (`previewScroll`);
     the header shows `↑`/`↑↓`/`↓` for which way more content exists, and the offset
     resets to the bottom whenever the selected session changes.
 - **Open / resume** (`↵` or `→`) branches on whether the session has a **live
@@ -371,8 +371,10 @@ visible at a glance.
   `d` remove · `b` bring back (a
   stopped session to the main pane) · `l` logs ·
   `o` group (cycle dir→status / status→dir / recently-entered / alphabetical) ·
-  `s` stopped-window toggle · `p` preview · `^u`/`^d` (or `pgup`/`pgdn`)
-  scroll preview · `/` filter (metadata; **live fuzzy** — type to narrow
+  `s` stopped-window toggle · `p` preview · `^u`/`^d` scroll preview ·
+  `pgup`/`pgdn` first/last session · `⌥↑`/`⌥↓` jump 5 (macOS terminals own ⌘,
+  so cmd+arrows can't reach a TUI; remap ⌘↑/⌘↓ to ESC[1;3A / ESC[1;3B in the
+  terminal to use them) · `/` filter (metadata; **live fuzzy** — type to narrow
   (subsequence match; the dir/status grouping is kept), `↑/↓` (or `ctrl+j/k`)
   move the selection without leaving the prompt, `↵` opens the selected session
   directly while `tab` just confirms the filter and stays in the list (shift+enter

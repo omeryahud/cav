@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/omeryahud/cav/internal/config"
 )
 
@@ -90,5 +92,37 @@ func TestSelectUnlessTouched(t *testing.T) {
 	}
 	if got := selectUnlessTouched(nil, start, "job1"); got != "job1" {
 		t.Errorf("nil activity should fall back to restoring, got %q", got)
+	}
+}
+
+// pgup/pgdn jump to the first/last session; alt+up/down move five.
+func TestListNavKeys(t *testing.T) {
+	m := openModel(t, "a", "b", "c", "d", "e", "f", "g", "h")
+	m.view = m.all
+	press := func(k tea.KeyMsg) { m.handleListKey(k) }
+
+	press(tea.KeyMsg{Type: tea.KeyPgDown})
+	if m.cursor != 7 {
+		t.Errorf("pgdown: cursor = %d, want 7", m.cursor)
+	}
+	press(tea.KeyMsg{Type: tea.KeyPgUp})
+	if m.cursor != 0 {
+		t.Errorf("pgup: cursor = %d, want 0", m.cursor)
+	}
+	press(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+	if m.cursor != 5 {
+		t.Errorf("alt+down: cursor = %d, want 5", m.cursor)
+	}
+	press(tea.KeyMsg{Type: tea.KeyDown, Alt: true}) // clamps at the end
+	if m.cursor != 7 {
+		t.Errorf("alt+down clamp: cursor = %d, want 7", m.cursor)
+	}
+	press(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+	if m.cursor != 2 {
+		t.Errorf("alt+up: cursor = %d, want 2", m.cursor)
+	}
+	press(tea.KeyMsg{Type: tea.KeyUp, Alt: true}) // clamps at the top
+	if m.cursor != 0 {
+		t.Errorf("alt+up clamp: cursor = %d, want 0", m.cursor)
 	}
 }

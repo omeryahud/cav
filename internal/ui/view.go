@@ -501,7 +501,7 @@ func (m *Model) previewLines(h int) []string {
 		}
 	}
 	// Window the body to the pane: bottom-anchored, offset upward by previewScroll
-	// (ctrl+u/ctrl+d, pgup/pgdn). The header arrows show which way more exists.
+	// (ctrl+u/ctrl+d). The header arrows show which way more exists.
 	hdr := "─ preview ─"
 	if avail := h - 1; avail > 0 && len(body) > avail {
 		maxOff := len(body) - avail
@@ -598,7 +598,7 @@ func (m *Model) helpBar() string {
 		{"F", "fork"}, {"C", "clone"},
 		{"d", "remove"}, {"b", "bring back"}, {"x", "stop"}, {"z/Z", "stop idle/all"},
 		{"l", "logs"}, {"o", "group"}, {"s", stopped},
-		{"p", "preview"}, {"^u/^d", "scroll"}, {"/", "filter"}, {"f", "search"},
+		{"p", "preview"}, {"^u/^d", "scroll"}, {"⇞/⇟", "top/bottom"}, {"⌥↑/↓", "±5"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},
 	}
 	parts := make([]string, len(binds))

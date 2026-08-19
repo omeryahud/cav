@@ -227,20 +227,23 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = clamp(m.cursor+1, 0, lastIndex(len(m.view)))
 	case "k", "up":
 		m.cursor = clamp(m.cursor-1, 0, lastIndex(len(m.view)))
-	case "g", "home":
+	case "g", "home", "pgup":
 		m.cursor = 0
-	case "G", "end":
+	case "G", "end", "pgdown":
 		m.cursor = lastIndex(len(m.view))
+	case "alt+down":
+		// ±5 jump. Bound to option/alt: macOS terminals own the ⌘ key, so
+		// cmd+arrows never reach a TUI — remap them in the terminal to emit
+		// these sequences (ESC[1;3B / ESC[1;3A) if ⌘ is preferred.
+		m.cursor = clamp(m.cursor+5, 0, lastIndex(len(m.view)))
+	case "alt+up":
+		m.cursor = clamp(m.cursor-5, 0, lastIndex(len(m.view)))
 	case "p":
 		m.previewOn = !m.previewOn
 	case "ctrl+u":
 		m.scrollPreview(max(1, m.previewBodyHeight()/2)) // half page toward older
 	case "ctrl+d":
 		m.scrollPreview(-max(1, m.previewBodyHeight()/2)) // half page toward latest
-	case "pgup":
-		m.scrollPreview(max(1, m.previewBodyHeight()-1))
-	case "pgdown":
-		m.scrollPreview(-max(1, m.previewBodyHeight()-1))
 	case "o":
 		m.groupMode = (m.groupMode + 1) % 4 // cycle: none → dir→status → status→dir → recent
 		m.recompute()
