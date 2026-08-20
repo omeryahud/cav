@@ -71,6 +71,10 @@ type Attach struct {
 	PopupHeight string
 	// Pane size for the "pane" style (the session pane's share of the window).
 	PaneSize string
+	// PaneZoom: zoom the session pane to the full window on open (tmux
+	// resize-pane -Z). prefix+z toggles back to the side-by-side split; the
+	// window unzooms itself when the pane closes.
+	PaneZoom bool
 }
 
 // Preview covers the right-hand pane.
@@ -148,7 +152,7 @@ func Defaults() Config {
 		ProjectRoot: filepath.Join(home, "go", "src", "github.com", "omeryahud"),
 		ClaudeBin:   "claude",
 		NewSession:  NewSession{Model: "fable", Effort: "max"},
-		Attach:      Attach{TmuxScratch: true, TmuxStyle: "popup", PopupWidth: "100%", PopupHeight: "100%", PaneSize: "75%"},
+		Attach:      Attach{TmuxScratch: true, TmuxStyle: "popup", PopupWidth: "100%", PopupHeight: "100%", PaneSize: "75%", PaneZoom: false},
 		Preview: Preview{
 			MinWidth:      100,
 			WidthPercent:  50,
@@ -242,6 +246,7 @@ type attachFile struct {
 	PopupWidth  *string `json:"popupWidth"`
 	PopupHeight *string `json:"popupHeight"`
 	PaneSize    *string `json:"paneSize"`
+	PaneZoom    *bool   `json:"paneZoom"`
 }
 
 type newSessFile struct {
@@ -341,6 +346,9 @@ func Load() (Config, error) {
 		}
 		if v := a.PaneSize; v != nil && *v != "" {
 			cfg.Attach.PaneSize = *v
+		}
+		if v := a.PaneZoom; v != nil {
+			cfg.Attach.PaneZoom = *v
 		}
 	}
 	if n := f.NewSession; n != nil {

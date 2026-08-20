@@ -249,7 +249,9 @@ visible at a glance.
     session in a **split of the same window** (`split-window -h -l
     attach.paneSize`, default 75% — cav keeps rendering alongside at reduced
     width and re-expands when the pane closes; `watchPaneCmd` polls the pane id
-    for the callback). Pane/scratch closes are **instant on ←** via
+    for the callback; with `attach.paneZoom` the pane is zoomed on open —
+    fullscreen session, cav hidden beneath, `prefix+z` toggles the split back,
+    and the window unzooms itself when the pane closes). Pane/scratch closes are **instant on ←** via
     `armFastClose`: detaching makes `claude attach` run multi-second cleanup
     flushes before exiting, so a `pipe-pane` byte-matcher (perl `sysread`, not
     grep — the sequence has no trailing newline) watches for the
@@ -433,6 +435,7 @@ visible at a glance.
   | `attach.tmuxStyle` | `popup` | scratch flavor: `popup` (floating over cav) \| `pane` (split in the same window) \| `switch` (separate session) |
   | `attach.popupWidth` / `popupHeight` | `100%` | popup size (tmux size specs) |
   | `attach.paneSize` | `75%` | the session pane's share of the window (`pane` style) |
+  | `attach.paneZoom` | `false` | zoom the session pane on open (fullscreen; `prefix+z` reveals the split) |
   | `colors.*` | see below | the palette, by role |
 
   **Colors** take an ANSI 256 index (`42`) or a hex string (`"#5fd700"`); text

@@ -110,6 +110,16 @@ func TestAttachTmuxScratch(t *testing.T) {
 	if cfg.Attach.PaneSize != "75%" {
 		t.Errorf("paneSize default = %q, want 75%%", cfg.Attach.PaneSize)
 	}
+	withConfig(t, `{"attach": {"paneZoom": true}}`)
+	cfg, err = Load()
+	if err != nil || !cfg.Attach.PaneZoom {
+		t.Errorf("paneZoom override failed: %+v err=%v", cfg.Attach, err)
+	}
+	withConfig(t, "")
+	cfg, _ = Load()
+	if cfg.Attach.PaneZoom {
+		t.Error("paneZoom should default off")
+	}
 	withConfig(t, `{"attach": {"tmuxStyle": "hologram"}}`)
 	cfg, err = Load()
 	if err == nil || cfg.Attach.TmuxStyle != "popup" {

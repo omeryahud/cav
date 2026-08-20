@@ -588,6 +588,12 @@ func (m *Model) paneAttachCmd(jobID, title, note string, live bool) tea.Cmd {
 	}
 	paneID := strings.TrimSpace(string(out))
 	armFastClose(paneID)
+	if m.cfg.Attach.PaneZoom {
+		// Fullscreen the session (tmux zoom): cav hides beneath instead of
+		// squeezing beside; prefix+z toggles the split back, and the window
+		// unzooms on its own when the pane closes.
+		_ = exec.Command("tmux", "resize-pane", "-Z", "-t", paneID).Run()
+	}
 	return watchPaneCmd(paneID, note, jobID, m.act, time.Now())
 }
 
