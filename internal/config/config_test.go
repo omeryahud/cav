@@ -230,8 +230,8 @@ func TestIdleBackoffKeys(t *testing.T) {
 func TestNewSessionDefaultsAndOverride(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()
-	if cfg.NewSession.Model != "fable" || cfg.NewSession.Effort != "max" {
-		t.Errorf("defaults = %+v, want fable/max", cfg.NewSession)
+	if cfg.NewSession.Model != "claude-fable-5-1" || cfg.NewSession.Effort != "max" {
+		t.Errorf("defaults = %+v, want claude-fable-5-1/max", cfg.NewSession)
 	}
 
 	withConfig(t, `{"newSession": {"model": "opus", "effort": "high"}}`)

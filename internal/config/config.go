@@ -151,7 +151,7 @@ func Defaults() Config {
 	return Config{
 		ProjectRoot: filepath.Join(home, "go", "src", "github.com", "omeryahud"),
 		ClaudeBin:   "claude",
-		NewSession:  NewSession{Model: "fable", Effort: "max"},
+		NewSession:  NewSession{Model: "claude-fable-5-1", Effort: "max"},
 		Attach:      Attach{TmuxScratch: true, TmuxStyle: "popup", PopupWidth: "100%", PopupHeight: "100%", PaneSize: "75%", PaneZoom: false},
 		Preview: Preview{
 			MinWidth:      100,
