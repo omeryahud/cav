@@ -268,19 +268,11 @@ visible at a glance.
     terminal to `claude attach <jobId>` via `tea.ExecProcess`; on exit, cav
     resumes in place. You can't attach to a session already attached elsewhere
     (e.g. the one you're typing in).
-  - **Stepping out re-highlights that session.** `openCurrent`'s exit callback
-    returns `actionMsg{selectJob: jobId}`, which sets `selectJobID` so the next
-    refresh moves the cursor onto the session you left — by **job id**, not the
-    old list index, which drifts (attaching flips the session busy, so it
-    reorders; resuming a stopped one forces cursor 0). Same mechanism
-    create/fork/clone use to highlight a new session once it appears.
-    **Except when you've already moved on:** in the tmux flavors cav stays
-    live, so the exit watchers (which can lag the actual close by ≤500ms) drop
-    the re-highlight if any cav keypress landed after the attach began
-    (`selectUnlessTouched`, reading the idle-tracker's atomic stamp — keys
-    typed inside the session pane never reach cav, so only real cav
-    interaction counts). The suspended ExecProcess path keeps the
-    unconditional restore: no keys can reach cav there.
+  - **Stepping out never moves the cursor.** Every exit path (the ExecProcess
+    callback and the popup/pane/scratch watchers) carries only the back-note,
+    with no `selectJob`, so the highlight stays wherever the user has it.
+    The `selectJobID` highlight-on-appear mechanism belongs to create, fork,
+    and clone only, which target new sessions rather than a step-out.
   - **No live worker** (stopped / done / sleep-dropped — the daemon has released
     the job, so bare `claude attach` errors with "No job matching") → opened with
     `ResumeAttachCmd`: `claude respawn <jobId> && claude attach <jobId>`. `respawn`

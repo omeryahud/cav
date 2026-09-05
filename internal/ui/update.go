@@ -521,23 +521,12 @@ func (m *Model) openCurrent() tea.Cmd {
 	if !live {
 		cmd = claude.ResumeAttachCmd(id, label)
 	}
+	// Stepping out never moves the cursor: the exit callback carries only the
+	// back-note. Highlight-on-appear (selectJobID) stays for create/fork/clone,
+	// which target new sessions rather than a step-out.
 	return tea.ExecProcess(cmd, func(error) tea.Msg {
-		// Highlight the session we just stepped out of: hold its job id (not the
-		// list index, which drifts as the list reorders — attaching flips it busy,
-		// resuming forces cursor 0) and let the next refresh move the cursor to it.
-		return actionMsg{note: note, selectJob: id}
+		return actionMsg{note: note}
 	})
-}
-
-// selectUnlessTouched returns jobID for the post-attach re-highlight, or ""
-// when the user has pressed keys in cav since the attach started — in the
-// tmux flavors cav keeps running, so a deliberately moved cursor must not be
-// yanked back to the stepped-out session.
-func selectUnlessTouched(act *activity, since time.Time, jobID string) string {
-	if act != nil && act.touchedSince(since) {
-		return ""
-	}
-	return jobID
 }
 
 // popupAttachCmd runs the watchdog attach inside a floating tmux popup over
@@ -574,7 +563,7 @@ func (m *Model) popupAttachCmd(jobID, title, note string, live bool) tea.Cmd {
 			return actionMsg{err: fmt.Errorf("tmux popup: %v: %s (popups can't nest; set attach.tmuxStyle to \"switch\" if cav runs inside one)",
 				err, strings.TrimSpace(string(out)))}
 		}
-		return actionMsg{note: note, selectJob: selectUnlessTouched(m.act, start, jobID)}
+		return actionMsg{note: note}
 	}
 }
 
@@ -615,7 +604,7 @@ func (m *Model) paneAttachCmd(jobID, title, note string, live bool) tea.Cmd {
 		// unzooms on its own when the pane closes.
 		_ = exec.Command("tmux", "resize-pane", "-Z", "-t", paneID).Run()
 	}
-	return watchPaneCmd(paneID, note, jobID, m.act, time.Now())
+	return watchPaneCmd(paneID, note)
 }
 
 // armFastClose makes ← close an attach pane instantly. Detaching makes
@@ -646,13 +635,14 @@ func armFastClose(paneID string) {
 }
 
 // watchPaneCmd resolves once the session pane is gone — the pane-style
-// analogue of the ExecProcess exit callback.
-func watchPaneCmd(paneID, note, jobID string, act *activity, started time.Time) tea.Cmd {
+// analogue of the ExecProcess exit callback. It only restores the back-note;
+// the cursor stays wherever the user has it.
+func watchPaneCmd(paneID, note string) tea.Cmd {
 	return func() tea.Msg {
 		for {
 			out, err := exec.Command("tmux", "display", "-p", "-t", paneID, "#{pane_id}").Output()
 			if err != nil || strings.TrimSpace(string(out)) != paneID {
-				return actionMsg{note: note, selectJob: selectUnlessTouched(act, started, jobID)}
+				return actionMsg{note: note}
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -698,17 +688,17 @@ func (m *Model) openInTmuxScratch(jobID, title, note string, live bool) tea.Cmd 
 		// pointer instead of failing the open.
 		m.status = "attached in tmux session " + name + " (switch failed: " + strings.TrimSpace(string(out)) + ")"
 	}
-	return watchScratchCmd(name, note, jobID, m.act, time.Now())
+	return watchScratchCmd(name, note)
 }
 
 // watchScratchCmd resolves once the scratch session ends, restoring the
 // back-note and re-highlighting the session — the tmux-path analogue of the
 // ExecProcess exit callback.
-func watchScratchCmd(name, note, jobID string, act *activity, started time.Time) tea.Cmd {
+func watchScratchCmd(name, note string) tea.Cmd {
 	return func() tea.Msg {
 		for {
 			if err := exec.Command("tmux", "has-session", "-t", name).Run(); err != nil {
-				return actionMsg{note: note, selectJob: selectUnlessTouched(act, started, jobID)}
+				return actionMsg{note: note}
 			}
 			time.Sleep(500 * time.Millisecond)
 		}

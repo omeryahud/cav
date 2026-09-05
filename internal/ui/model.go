@@ -103,7 +103,7 @@ type (
 	actionMsg struct {
 		note      string
 		err       error
-		selectJob string // job id to re-highlight once it next appears (e.g. after stepping out of a session)
+		selectJob string // job id to highlight once it next appears (create/fork/clone only; step-out never moves the cursor)
 	}
 	searchDoneMsg struct {
 		q   string
@@ -358,14 +358,6 @@ func (a *activity) touch() {
 
 func (a *activity) sinceInput() time.Duration {
 	return time.Since(time.UnixMilli(a.last.Load()))
-}
-
-// touchedSince reports whether any cav keypress landed after t. The tmux
-// attach flavors use it to decide whether re-highlighting the stepped-out
-// session would yank a cursor the user has since moved — cav stays live in
-// those flavors, unlike the suspended ExecProcess handoff.
-func (a *activity) touchedSince(t time.Time) bool {
-	return a.last.Load() > t.UnixMilli()
 }
 
 // idleDelay returns how long the refresh loop should sleep between polls given
