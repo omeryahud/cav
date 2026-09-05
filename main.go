@@ -15,8 +15,8 @@ import (
 
 const usage = `usage: cav [term]            open with the list filtered to <term>
        cav -o <name>        open the session named <name> (--open)
-       cav -n [name] [-a]   new session in the current dir (--new; -a/--attach
-                            drops you straight into it)
+       cav -n <name> [-a]   new session in the current dir (--new; the name is
+                            required; -a/--attach drops you straight into it)
 `
 
 // parseArgs maps the CLI onto ui.Options. -a/--attach may appear anywhere but
@@ -47,6 +47,9 @@ func parseArgs(args []string, cwd string) (ui.Options, error) {
 	case len(rest) > 0 && (rest[0] == "-n" || rest[0] == "--new"):
 		opts.NewInDir = cwd
 		opts.NewName = strings.TrimSpace(strings.Join(rest[1:], " "))
+		if opts.NewName == "" {
+			return opts, errors.New("-n needs a session name (names are required)")
+		}
 		opts.AttachNew = attach
 	case attach:
 		return opts, errors.New("-a only applies to -n")

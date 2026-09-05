@@ -594,7 +594,7 @@ func (m *Model) helpBar() string {
 		stopped = "back"
 	}
 	binds := []struct{ k, d string }{
-		{"n", "new"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
+		{"n", "new"}, {"a", "new here"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
 		{"F", "fork"}, {"C", "clone"},
 		{"d", "remove"}, {"b", "bring back"}, {"x", "stop"}, {"z/Z", "stop idle/all"},
 		{"l", "logs"}, {"o", "group"}, {"s", stopped},

@@ -340,32 +340,38 @@ visible at a glance.
   Main window only; the daemon's spare-process pool is out of cav's hands
   (it's on-demand and exits when cav does).
 - **Fork** (`F`): forks the highlighted session into a new child background session
-  that continues its conversation — `claude --bg --resume <sid> --fork-session`,
-  in the parent's cwd, reusing its respawn flags (minus `--name`). The child→parent
-  link is recorded cav-locally (`internal/forks`), so `recompute`/`applyForkTree`
-  nests the child **directly under its parent**, indented with a `└─` tree branch
-  (per-row `depth`); nested children ride with their parent and get no dir/status
-  header of their own. The child is highlighted once it registers (like a create),
-  and inherits the parent's name (via `--resume`) — `R`-rename to distinguish.
-- **Clone** (`C`): same invocation as fork — a new background session continuing
-  the highlighted session's conversation — but **independent**: no fork link is
-  recorded, so it appears top-level, not nested (`forkedMsg.record` distinguishes
-  the two paths). The clone is named **`copy-<original>`** — cav passes it as
-  `--name` on the `--bg` invocation (verified: `--name` takes effect alongside
-  `--fork-session`), so it's the real daemon name, not just a cav-local rename.
-  Because a clone continues the parent's conversation via `--resume`, it can
-  momentarily surface under the **parent's** inherited name before the daemon
-  settles on ours; cav **hides it until it appears as `copy-<original>`**
-  (`pendingClone` jobId→wanted-name, checked by `hiddenPendingClone` in
-  `recompute`, retired in the refresh handler once the name matches so a later
-  `R`-rename can't re-hide it). Highlighted once it appears named; `R` to rename.
+  that continues its conversation. Pressing `F` first opens the **required name
+  step** (prefilled with the parent's name; enter on an empty name refuses, esc
+  cancels with nothing created; the parent is snapshotted at keypress like
+  `m.pending`). Confirming fires `claude --bg --resume <sid> --fork-session
+  --name <typed>` in the parent's cwd, reusing its respawn flags (minus the
+  parent's `--name`). The child to parent link is recorded cav-locally
+  (`internal/forks`), so `recompute`/`applyForkTree` nests the child **directly
+  under its parent**, indented with a `└─` tree branch (per-row `depth`);
+  nested children ride with their parent and get no dir/status header of their
+  own.
+- **Clone** (`C`): same invocation and the same required name step as fork
+  (prefilled **`copy-<original>`**), but **independent**: no fork link is
+  recorded, so it appears top-level, not nested (`forkedMsg.record`
+  distinguishes the two paths). The typed name is passed as `--name` on the
+  `--bg` invocation (verified: `--name` takes effect alongside
+  `--fork-session`), so it's the real daemon name in the job's respawnFlags,
+  not a cav-local rename, and respawns keep it.
+- Because forks and clones continue the parent's conversation via `--resume`,
+  the child can momentarily surface under the **parent's** inherited name
+  before the daemon settles on the typed one; cav **hides it until it appears
+  under the typed name** (`pendingClone` jobId to wanted-name, checked by
+  `hiddenPendingClone` in `recompute`, retired in the refresh handler once the
+  name matches so a later `R`-rename can't re-hide it), then highlights it.
 - **Labels** (`L`): free-form, space-separated tags per session, kept cav-locally
   (`internal/labels`, `~/.config/cav/labels.json`; empty input clears). They render
   at the end of the row as `#tag1 #tag2` (`labelSuffix`) and are part of the `/`
   filter haystack (`sessionMatches`: substring + subsequence), so sessions are
   findable by label.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
-  stopped window) · `n` new (highlights it) · `N` new project (new dir) · `R` rename ·
+  stopped window) · `n` new (highlights it) · `a` new session **in the
+  highlighted session's directory** (skips the picker, straight to the name
+  step) · `N` new project (new dir) · `R` rename ·
   `L` label (searchable `#tags`) · `F` fork (nests the child under the parent) ·
   `C` clone (independent copy, top-level) · `x` stop the highlighted session's
   process · `z`/`Z` stop idle/all session
@@ -391,13 +397,14 @@ visible at a glance.
   out lands back in cav with it highlighted. No or many matches → the list
   opens with the filter pre-set to `<name>` and a status note, so you're one
   keystroke from done. `-h`/`--help` prints usage; `-o` with no name exits 2.)
-  · `cav -n [name] [-a]` (`--new`: create a session **in the current dir** at
+  · `cav -n <name> [-a]` (`--new`: create a session **in the current dir** at
   startup — Init fires `createCmd` alongside the first refresh; the session is
-  highlighted once it registers, exactly like the TUI `n`. With `-a`/`--attach`
-  the registration attaches instead (the `selectJobID` branch consumes
-  `attachNew` one-shot and calls `openCurrent`), so stepping out lands back in
-  cav with it highlighted. `-a` anywhere among the args; `-a` without `-n`
-  exits 2. No initial-prompt flag — the session starts idle.)
+  highlighted once it registers, exactly like the TUI `n`. The name is
+  **required** (`-n` without one exits 2, like every create path). With
+  `-a`/`--attach` the registration attaches instead (the `selectJobID` branch
+  consumes `attachNew` one-shot and calls `openCurrent`), so stepping out
+  lands back in cav with it highlighted. `-a` anywhere among the args; `-a`
+  without `-n` exits 2. No initial-prompt flag — the session starts idle.)
 
 ## Config files
 
@@ -478,13 +485,18 @@ same directories as the `cdf` command, **except `$HOME` itself**: `cdf` walks ho
 lazily with `fd`, but cav's eager walk of all of `$HOME` is far too slow/large
 (~120k dirs here).
 
-Both create flows are a small wizard — **session name, then an initial prompt**
-(both optional, in that order) — and then they create the session and
-**highlight it in the list** (move the cursor to it) rather than attaching:
-- `n` (new session): fuzzy-pick an existing directory, then name → prompt.
-- `N` (**new project**): type a name → cav makes `<projectRoot>/<name>`
-  (`config.json`'s `projectRoot`, default `~/go/src/github.com/omeryahud`) →
-  session name (defaults to that dir) → prompt (empty = idle).
+Every create flow runs through a small wizard: **session name, then an initial
+prompt**. The name is **required** on every path (`handleNewNameKey`: enter on
+an empty name refuses with a footer hint, esc cancels the creation); the
+prompt is optional (empty = idle). The session is then created and
+**highlighted in the list** (cursor moves to it) rather than attached:
+- `n` (new session): fuzzy-pick an existing directory, then name, then prompt.
+- `a` (new session **here**): like `n` but the directory is the highlighted
+  session's cwd, so the picker is skipped.
+- `N` (**new project**): type a name, cav makes `<projectRoot>/<name>`
+  (`config.json`'s `projectRoot`, default `~/go/src/github.com/omeryahud`),
+  then session name (prefilled with that dir's name), then prompt.
+- `F`/`C` (fork/clone): name only, no prompt step; see their bullets above.
 
 `claude.Create` parses the new job id out of `claude --bg`'s output
 (`backgrounded · <id> …`); a new session registers with the daemon

@@ -64,6 +64,17 @@ func groupingFromConfig(v string) grouping {
 	}
 }
 
+// createKind is which creation flow the name wizard belongs to. Every flow
+// requires a name before anything is created.
+type createKind int
+
+const (
+	kindDir     createKind = iota // n or a: session in an existing directory
+	kindProject                   // N: session in a new directory under projectRoot
+	kindFork                      // F: child session nested under the parent
+	kindClone                     // C: independent copy of the parent
+)
+
 type mode int
 
 const (
@@ -151,7 +162,8 @@ type Model struct {
 	matchIDs     map[string]bool   // active deep-search result set (nil = inactive)
 	newCWD       string            // cwd for a pending new session
 	newName      string            // session name entered in the create wizard
-	newIsProject bool              // create wizard: N (make a new dir) vs n (existing dir)
+	newKind      createKind        // which create flow the wizard is running (n/a, N, F, C)
+	newParent    *claude.Session   // fork/clone source, snapshotted at keypress like m.pending
 	selectJobID  string            // job id of a just-created session to highlight once it appears
 	pendingClone map[string]string // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
 	pending      *claude.Session   // session awaiting delete confirmation

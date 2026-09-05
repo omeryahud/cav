@@ -161,19 +161,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case forkedMsg:
 		// Fork (F) or clone (C) created a new session continuing parentSID's
-		// conversation. A fork records child→parent so it nests under the parent;
-		// a clone stays top-level (no link). Highlight it once it appears.
+		// conversation. A fork records the child to parent link so it nests; a
+		// clone stays top-level. Both carry a user-typed name and stay hidden
+		// until they appear under it (no flash of the parent's inherited name),
+		// then get highlighted.
 		if msg.record {
 			if err := m.forks.Set(msg.childJobID, msg.parentSID); err != nil {
 				m.err = err
 			}
-			m.status = "forked " + msg.label
+			m.status = "forked " + msg.cloneName
 		} else {
-			// Clone: hide it until it appears under its "copy-…" name (no flash of
-			// the parent's inherited name), then highlight it like a fork/create.
-			m.pendingClone[msg.childJobID] = msg.cloneName
 			m.status = "cloned " + msg.cloneName
 		}
+		m.pendingClone[msg.childJobID] = msg.cloneName
 		m.selectJobID = msg.childJobID
 		return m, nil
 
@@ -307,21 +307,42 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.CursorEnd()
 			return m, m.input.Focus()
 		}
-	case "F":
-		// Fork the highlighted session: a new child bg session continuing its
-		// conversation, nested under it in the list.
+	case "a":
+		// New session in the highlighted session's directory: skip the picker
+		// and go straight to the (required) name step.
 		if s := m.current(); s != nil {
-			m.status = "forking " + m.displayName(*s) + "…"
-			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), "", true, m.cfg.Timeouts.Command)
+			m.newCWD = s.CWD
+			m.newKind = kindDir
+			m.mode = modeNewName
+			m.input.SetValue("")
+			m.input.Placeholder = "session name (required)…"
+			return m, m.input.Focus()
+		}
+	case "F":
+		// Fork the highlighted session. Nothing is created until the (required)
+		// name step is confirmed; the input starts as the parent's name.
+		if s := m.current(); s != nil {
+			cp := *s
+			m.newParent = &cp
+			m.newKind = kindFork
+			m.mode = modeNewName
+			m.input.SetValue(m.displayName(cp))
+			m.input.Placeholder = "fork name (required)…"
+			m.input.CursorEnd()
+			return m, m.input.Focus()
 		}
 	case "C":
-		// Clone the highlighted session: same as fork — a new bg session continuing
-		// its conversation — but independent (top-level), not nested under it, and
-		// named "copy-<original>". It stays hidden until it shows that name.
+		// Clone the highlighted session (independent, top-level). Same required
+		// name step as fork; the input starts as "copy-<original>".
 		if s := m.current(); s != nil {
-			name := "copy-" + m.displayName(*s)
-			m.status = "cloning " + m.displayName(*s) + " → " + name + "…"
-			return m, forkCmd(s.SessionID, m.jobID(s), s.CWD, m.displayName(*s), name, false, m.cfg.Timeouts.Command)
+			cp := *s
+			m.newParent = &cp
+			m.newKind = kindClone
+			m.mode = modeNewName
+			m.input.SetValue("copy-" + m.displayName(cp))
+			m.input.Placeholder = "clone name (required)…"
+			m.input.CursorEnd()
+			return m, m.input.Focus()
 		}
 	case "L":
 		// Edit the highlighted session's labels (space-separated tags; empty clears).
@@ -765,7 +786,7 @@ func (m *Model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		prompt := m.input.Value()
 		m.mode = modeList
 		m.input.Blur()
-		if m.newIsProject {
+		if m.newKind == kindProject {
 			m.status = "creating project…"
 			return m, newProjectCmd(m.newCWD, m.newName, prompt, m.cfg.ProjectRoot, m.cfg.NewSession, m.cfg.Timeouts.Command)
 		}
@@ -777,16 +798,40 @@ func (m *Model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// handleNewNameKey is the create wizard's session-name step: capture the name,
-// then advance to the prompt step (modeNew). esc cancels the whole wizard.
+// handleNewNameKey is the name step every create flow passes through. The name
+// is required: an empty enter refuses, esc cancels the creation entirely (for
+// fork/clone nothing has been created yet). With a name, fork/clone fire
+// immediately; the dir/project flows advance to the prompt step (modeNew).
 func (m *Model) handleNewNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = modeList
+		m.newParent = nil
 		m.input.Blur()
 		return m, nil
 	case "enter":
-		m.newName = strings.TrimSpace(m.input.Value())
+		name := strings.TrimSpace(m.input.Value())
+		if name == "" {
+			m.status = "a name is required (esc cancels)"
+			return m, nil
+		}
+		if m.newKind == kindFork || m.newKind == kindClone {
+			p := m.newParent
+			m.newParent = nil
+			m.mode = modeList
+			m.input.Blur()
+			if p == nil {
+				return m, nil
+			}
+			verb := "cloning "
+			if m.newKind == kindFork {
+				verb = "forking "
+			}
+			m.status = verb + m.displayName(*p) + " → " + name + "…"
+			return m, forkCmd(p.SessionID, m.jobID(p), p.CWD, m.displayName(*p), name,
+				m.newKind == kindFork, m.cfg.Timeouts.Command)
+		}
+		m.newName = name
 		m.mode = modeNew
 		m.input.SetValue("")
 		m.input.Placeholder = "initial prompt (optional)…"
@@ -813,10 +858,10 @@ func (m *Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.newCWD = filepath.Join(m.cfg.ProjectRoot, project)
-		m.newIsProject = true
+		m.newKind = kindProject
 		m.mode = modeNewName
 		m.input.SetValue(filepath.Base(m.newCWD)) // default session name = the new dir's name
-		m.input.Placeholder = "session name…"
+		m.input.Placeholder = "session name (required)…"
 		m.input.CursorEnd()
 		return m, nil
 	}
@@ -996,10 +1041,10 @@ func (m *Model) handlePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.newCWD = m.pickHit[m.pickCur]
-		m.newIsProject = false
+		m.newKind = kindDir
 		m.mode = modeNewName
 		m.input.SetValue("")
-		m.input.Placeholder = "session name (optional)…"
+		m.input.Placeholder = "session name (required)…"
 		return m, nil
 	}
 	var cmd tea.Cmd
