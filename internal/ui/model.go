@@ -136,42 +136,45 @@ type (
 
 // Model is the cav application state.
 type Model struct {
-	all          []claude.Session          // full list in display order
-	view         []claude.Session          // filtered/searched subset shown
-	roster       claude.Roster             // sessionId -> job id (attachable iff present)
-	states       map[string]string         // sessionId -> job lifecycle state (working/done/blocked)
-	live         map[string]bool           // sessionId -> has a live daemon worker (else respawn to attach)
-	names        *names.Store              // cav-local display-name overrides
-	labels       *labels.Store             // cav-local searchable labels (L), shown as #tag on the row
-	dismissed    *dismiss.Store            // cav-local set of sessions hidden with d (survives restart)
-	forks        *forks.Store              // cav-local child-jobId -> parent-sessionId (fork tree)
-	unparked     *unpark.Store             // cav-local session IDs brought back to the main pane (b)
-	entered      *entered.Store            // cav-local sessionId -> last time it was opened (backs the recently-entered sort)
-	depth        map[string]int            // sessionId -> fork-tree depth (0 = top-level), set by recompute
-	ghostParent  map[string]claude.Session // (stopped view) first child of a ghost group -> its active parent, shown as a faint context row
-	groupMode    grouping                  // none (alphabetical) | dir→status | status→dir | recent (o cycles)
-	groupDefault grouping                  // configured startup mode; the header flags any other mode
-	stoppedView  bool                      // true: showing the stopped-sessions window (s toggles)
-	justStopped  map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
-	cfg          config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
-	seen         *seen.Store               // persisted cache: sessionId -> last name seen (survives restart + transient drops)
-	cursor       int
-	mode         mode
-	input        textinput.Model
-	filter       string            // active metadata filter
-	matchIDs     map[string]bool   // active deep-search result set (nil = inactive)
-	newCWD       string            // cwd for a pending new session
-	newName      string            // session name entered in the create wizard
-	newKind      createKind        // which create flow the wizard is running (n/a, N, F, C)
-	newParent    *claude.Session   // fork/clone source, snapshotted at keypress like m.pending
-	selectJobID  string            // job id of a just-created session to highlight once it appears
-	pendingClone map[string]string // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
-	pending      *claude.Session   // session awaiting delete confirmation
-	pendingKill  string            // bulk power-save awaiting confirmation: "idle" (z) or "all" (Z)
-	autoOpen     string            // session name from `cav -o`; opened on the first refresh that resolves it
-	initNewDir   string            // `cav -n`: create a session here at startup ("" = off)
-	initNewName  string            // optional name for the -n session
-	attachNew    bool              // `-a`: attach to the -n session once it registers
+	all            []claude.Session          // full list in display order
+	view           []claude.Session          // filtered/searched subset shown
+	roster         claude.Roster             // sessionId -> job id (attachable iff present)
+	states         map[string]string         // sessionId -> job lifecycle state (working/done/blocked)
+	live           map[string]bool           // sessionId -> has a live daemon worker (else respawn to attach)
+	names          *names.Store              // cav-local display-name overrides
+	labels         *labels.Store             // cav-local searchable labels (L), shown as #tag on the row
+	dismissed      *dismiss.Store            // cav-local set of sessions hidden with d (survives restart)
+	forks          *forks.Store              // cav-local child-jobId -> parent-sessionId (fork tree)
+	unparked       *unpark.Store             // cav-local session IDs brought back to the main pane (b)
+	entered        *entered.Store            // cav-local sessionId -> last time it was opened (backs the recently-entered sort)
+	depth          map[string]int            // sessionId -> fork-tree depth (0 = top-level), set by recompute
+	ghostParent    map[string]claude.Session // (stopped view) first child of a ghost group -> its active parent, shown as a faint context row
+	groupMode      grouping                  // none (alphabetical) | dir→status | status→dir | recent (o cycles)
+	groupDefault   grouping                  // configured startup mode; the header flags any other mode
+	stoppedView    bool                      // true: showing the stopped-sessions window (s toggles)
+	justStopped    map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
+	cfg            config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
+	seen           *seen.Store               // persisted cache: sessionId -> last name seen (survives restart + transient drops)
+	cursor         int
+	mode           mode
+	input          textinput.Model
+	filter         string            // active metadata filter
+	matchIDs       map[string]bool   // active deep-search result set (nil = inactive)
+	newCWD         string            // cwd for a pending new session
+	newName        string            // session name entered in the create wizard
+	newKind        createKind        // which create flow the wizard is running (n/a, N, F, C)
+	newParent      *claude.Session   // fork/clone source, snapshotted at keypress like m.pending
+	launchDir      string            // directory cav was started from (. creates here)
+	dirSel         string            // cwd selected in the directory pane; "" = all
+	focusLaunchDir bool              // one-shot: select launchDir in the pane on the first refresh that has it
+	selectJobID    string            // job id of a just-created session to highlight once it appears
+	pendingClone   map[string]string // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
+	pending        *claude.Session   // session awaiting delete confirmation
+	pendingKill    string            // bulk power-save awaiting confirmation: "idle" (z) or "all" (Z)
+	autoOpen       string            // session name from `cav -o`; opened on the first refresh that resolves it
+	initNewDir     string            // `cav -n`: create a session here at startup ("" = off)
+	initNewName    string            // optional name for the -n session
+	attachNew      bool              // `-a`: attach to the -n session once it registers
 
 	// new-session directory picker
 	pickAll []string
@@ -205,6 +208,7 @@ type Options struct {
 	NewInDir  string // `cav -n`: create a session in this directory at startup
 	NewName   string // optional name for the -n session
 	AttachNew bool   // `-a`: attach to the -n session the moment it registers
+	LaunchDir string // where cav was started: focused in the dir pane, target of the . key
 }
 
 // New constructs the initial model from the CLI options.
@@ -219,30 +223,32 @@ func New(opts Options) (*Model, error) {
 	claude.SetBin(cfg.ClaudeBin)
 	applyPalette(cfg.Colors)
 	return &Model{
-		cfg:          cfg,
-		err:          cfgErr,
-		filter:       opts.Filter,
-		autoOpen:     opts.Open,
-		initNewDir:   opts.NewInDir,
-		initNewName:  opts.NewName,
-		attachNew:    opts.AttachNew,
-		names:        names.Load(),
-		labels:       labels.Load(),
-		dismissed:    dismiss.Load(),
-		forks:        forks.Load(),
-		unparked:     unpark.Load(),
-		entered:      entered.Load(),
-		input:        ti,
-		mode:         modeList,
-		groupMode:    groupingFromConfig(cfg.List.Grouping),
-		groupDefault: groupingFromConfig(cfg.List.Grouping),
-		previewOn:    cfg.Preview.StartOn,
-		prevCache:    map[string]string{},
-		prevReq:      map[string]bool{},
-		states:       map[string]string{},
-		justStopped:  map[string]bool{},
-		pendingClone: map[string]string{},
-		seen:         seen.Load(),
+		cfg:            cfg,
+		err:            cfgErr,
+		filter:         opts.Filter,
+		autoOpen:       opts.Open,
+		initNewDir:     opts.NewInDir,
+		initNewName:    opts.NewName,
+		attachNew:      opts.AttachNew,
+		launchDir:      opts.LaunchDir,
+		focusLaunchDir: opts.LaunchDir != "",
+		names:          names.Load(),
+		labels:         labels.Load(),
+		dismissed:      dismiss.Load(),
+		forks:          forks.Load(),
+		unparked:       unpark.Load(),
+		entered:        entered.Load(),
+		input:          ti,
+		mode:           modeList,
+		groupMode:      groupingFromConfig(cfg.List.Grouping),
+		groupDefault:   groupingFromConfig(cfg.List.Grouping),
+		previewOn:      cfg.Preview.StartOn,
+		prevCache:      map[string]string{},
+		prevReq:        map[string]bool{},
+		states:         map[string]string{},
+		justStopped:    map[string]bool{},
+		pendingClone:   map[string]string{},
+		seen:           seen.Load(),
 	}, nil
 }
 
@@ -651,6 +657,9 @@ func dirBase(cwd string) string {
 // and not part of the editable (rename) name — so it applies uniformly to every
 // session (new and existing) with no double-prefixing.
 func (m *Model) rowName(s claude.Session) string {
+	if m.dirSel != "" {
+		return m.displayName(s) // the pane already names the directory
+	}
 	if d := dirBase(s.CWD); d != "" {
 		return d + "/" + m.displayName(s)
 	}
@@ -702,7 +711,13 @@ func (m *Model) showPreview() bool { return m.previewOn && m.width >= m.cfg.Prev
 // previewWidth is the column width used for the preview pane (and the wrap
 // width markdown is rendered at) — half the screen.
 func (m *Model) previewWidth() int {
-	return m.width * m.cfg.Preview.WidthPercent / 100
+	return m.previewWidthFor(m.width)
+}
+
+// previewWidthFor is the preview pane width inside a region of the given width
+// (the session area shrinks when the directory pane is on).
+func (m *Model) previewWidthFor(width int) int {
+	return width * m.cfg.Preview.WidthPercent / 100
 }
 
 // midHeight is the height of the middle list/preview region (everything between
@@ -846,6 +861,9 @@ func subseq(s, q string) bool {
 // recompute rebuilds the visible view from the full list + active filters.
 func (m *Model) recompute() {
 	q := strings.ToLower(strings.TrimSpace(m.filter))
+	if m.dirSel != "" && !m.hasSessionIn(m.dirSel) {
+		m.dirSel = "" // the selected directory emptied out: fall back to all
+	}
 	v := make([]claude.Session, 0, len(m.all))
 	for _, s := range m.all {
 		if m.matchIDs != nil && !m.matchIDs[s.SessionID] {
@@ -859,6 +877,9 @@ func (m *Model) recompute() {
 		}
 		if m.hiddenPendingClone(s) {
 			continue // a fresh clone not yet showing its "copy-…" name — hide the parent-name flash
+		}
+		if m.dirSel != "" && s.CWD != m.dirSel {
+			continue // outside the directory selected in the pane
 		}
 		v = append(v, s)
 	}

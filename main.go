@@ -75,6 +75,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "cav: %s\n%s", perr, usage)
 		os.Exit(2)
 	}
+	opts.LaunchDir = cwd
 	m, err := ui.New(opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cav:", err)

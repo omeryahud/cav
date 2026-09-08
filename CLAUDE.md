@@ -155,6 +155,20 @@ visible at a glance.
 
 ## UI behavior
 
+- **Directory pane** (left, `dirPane.widthPercent` of the width, default 25%;
+  `0` hides it, and it also hides below 60 columns): lists every directory
+  that has a session in the current window, `all` first then alphabetical by
+  leaf name (`dirEntries`; two directories with the same leaf show as
+  `parent/leaf`), each with its session count. `tab`/`shift+tab` move the
+  selection (`cycleDir`, wrapping). The session list on the right is scoped
+  to the selected directory (`m.dirSel`, matched by full cwd in `recompute`):
+  the title reads `N of M`, rows drop the `dir/` prefix (`rowName`), and the
+  grouped view keeps only its status headers. A selection whose sessions all
+  disappear falls back to `all`. On startup the directory cav was launched
+  from is selected if it has sessions (`focusLaunchDir`, a one-shot on the
+  first refresh that sees any session; `Options.LaunchDir` comes from `main`).
+  The session area itself is unchanged: `sessionArea` renders the list, or
+  list + preview when the remaining width still clears `preview.minWidth`.
 - **Grouping** (`o` cycles four `groupMode`s): **status→dir** (default; by
   status, then cwd) → **recent** (flat, most recently entered first) → **none**
   (flat, alphabetical) → **dir→status** (by cwd, then status). The startup mode
@@ -361,7 +375,9 @@ visible at a glance.
   filter haystack (`sessionMatches`: substring + subsequence), so sessions are
   findable by label.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
-  stopped window) · `n` new (highlights it) · `a` new session **in the
+  stopped window) · `tab`/`shift+tab` select a directory in the pane (scopes
+  the list) · `n` new (highlights it) · `.` new session **in the directory cav
+  was launched from** · `a` new session **in the
   highlighted session's directory** (skips the picker, straight to the name
   step) · `N` new project (new dir) · `R` rename ·
   `L` label (searchable `#tags`) · `F` fork (nests the child under the parent) ·
@@ -435,6 +451,7 @@ visible at a glance.
   | `attach.popupWidth` / `popupHeight` | `100%` | popup size (tmux size specs) |
   | `attach.paneSize` | `75%` | the session pane's share of the window (`pane` style) |
   | `attach.paneZoom` | `false` | zoom the session pane on open (fullscreen; `prefix+z` reveals the split) |
+  | `dirPane.widthPercent` | `25` | width of the directory pane on the left (10 to 50); `0` hides it |
   | `colors.*` | see below | the palette, by role |
 
   **Colors** take an ANSI 256 index (`42`) or a hex string (`"#5fd700"`); text
@@ -485,6 +502,8 @@ prompt is optional (empty = idle). The session is then created and
 - `n` (new session): fuzzy-pick an existing directory, then name, then prompt.
 - `a` (new session **here**): like `n` but the directory is the highlighted
   session's cwd, so the picker is skipped.
+- `.` (new session in the **launch directory**): like `a` but the directory
+  is where cav itself was started (`Options.LaunchDir`).
 - `N` (**new project**): type a name, cav makes `<projectRoot>/<name>`
   (`config.json`'s `projectRoot`, default `~/go/src/github.com/omeryahud`),
   then session name (prefilled with that dir's name), then prompt.

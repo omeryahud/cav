@@ -176,15 +176,15 @@ func (m *Model) View() string {
 	}
 
 	var mid []string
-	switch {
-	case m.mode == modePickDir:
+	if m.mode == modePickDir {
 		mid = m.pickerLines(midH, m.width)
-	case m.showPreview():
-		pw := m.previewWidth()
-		lw := m.width - pw - 3
-		mid = joinColumns(m.listLines(midH, lw), lw, m.previewLines(midH), pw, midH)
-	default:
-		mid = m.listLines(midH, m.width)
+	} else if dw := m.dirPaneWidth(); dw > 0 {
+		// Directory pane on the left; the session area (list, or list + preview)
+		// takes the rest.
+		rw := m.width - dw - 3
+		mid = joinColumns(m.dirPaneLines(midH, dw), dw, m.sessionArea(midH, rw), rw, midH)
+	} else {
+		mid = m.sessionArea(midH, m.width)
 	}
 
 	lines := append([]string{}, header...)
@@ -193,12 +193,23 @@ func (m *Model) View() string {
 	return strings.Join(lines, "\n")
 }
 
+// sessionArea renders the session list, split with the preview pane when it
+// fits in the given width.
+func (m *Model) sessionArea(h, width int) []string {
+	if m.previewOn && width >= m.cfg.Preview.MinWidth {
+		pw := m.previewWidthFor(width)
+		lw := width - pw - 3
+		return joinColumns(m.listLines(h, lw), lw, m.previewLines(h), pw, h)
+	}
+	return m.listLines(h, width)
+}
+
 func (m *Model) headerLines() []string {
 	label := "Claude Sessions"
 	if m.stoppedView {
 		label = "Stopped Sessions"
 	}
-	title := titleStyle.Render(fmt.Sprintf(" %s (%d) ", label, len(m.view)))
+	title := titleStyle.Render(fmt.Sprintf(" %s (%s) ", label, m.dirTitleCount()))
 	if ind := m.indicators(); ind != "" {
 		title += " " + hintStyle.Render(ind)
 	}
@@ -316,6 +327,18 @@ func (m *Model) groupedVisual(width int) ([]string, int) {
 	// groupMode, tracking the last-emitted cwd/rank so they aren't repeated.
 	emitHeaders := func(s claude.Session) {
 		rank := statusRank(m.statusOf(s))
+		if m.dirSel != "" {
+			// One directory is selected in the pane: only the status level is
+			// worth a header here.
+			if rank != lastRank {
+				if len(lines) > 0 {
+					lines = append(lines, "")
+				}
+				lines = append(lines, statusHeaderLine(rank, width, 0))
+				lastRank = rank
+			}
+			return
+		}
 		if byDir {
 			if s.CWD != lastCWD {
 				if len(lines) > 0 {
@@ -594,7 +617,7 @@ func (m *Model) helpBar() string {
 		stopped = "back"
 	}
 	binds := []struct{ k, d string }{
-		{"n", "new"}, {"a", "new here"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
+		{"⇥", "dir"}, {"n", "new"}, {".", "new in cwd"}, {"a", "new here"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
 		{"F", "fork"}, {"C", "clone"},
 		{"d", "remove"}, {"b", "bring back"}, {"x", "stop"}, {"z/Z", "stop idle/all"},
 		{"l", "logs"}, {"o", "group"}, {"s", stopped},

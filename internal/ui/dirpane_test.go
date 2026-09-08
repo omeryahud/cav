@@ -1,0 +1,146 @@
+package ui
+
+import (
+	"testing"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/omeryahud/cav/internal/claude"
+)
+
+// dirModel builds a model whose sessions live in the given directories
+// (one session per entry, named after its index).
+func dirModel(t *testing.T, dirs ...string) *Model {
+	t.Helper()
+	m := openModel(t)
+	m.input = textinput.New()
+	for i, d := range dirs {
+		m.all = append(m.all, claude.Session{
+			SessionID: string(rune('a'+i)) + "-sid",
+			Name:      string(rune('a' + i)),
+			Kind:      "background",
+			CWD:       d,
+		})
+	}
+	m.recompute()
+	return m
+}
+
+func TestDirEntriesAllFirstThenAlphabeticalWithCounts(t *testing.T) {
+	m := dirModel(t, "/w/zeta", "/w/alpha", "/w/alpha", "/w/mid")
+	got := m.dirEntries()
+	want := []dirEntry{
+		{"", "all", 4},
+		{"/w/alpha", "alpha", 2},
+		{"/w/mid", "mid", 1},
+		{"/w/zeta", "zeta", 1},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("entries = %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("entry %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestDirEntriesDisambiguateSameLeaf(t *testing.T) {
+	m := dirModel(t, "/one/proj", "/two/proj")
+	got := m.dirEntries()
+	if got[1].label != "one/proj" || got[2].label != "two/proj" {
+		t.Errorf("colliding leaves should show parent/leaf, got %q and %q", got[1].label, got[2].label)
+	}
+}
+
+func TestTabCyclesDirectoryAndScopesTheList(t *testing.T) {
+	m := dirModel(t, "/w/alpha", "/w/beta", "/w/beta")
+	if len(m.view) != 3 || m.dirSel != "" {
+		t.Fatalf("start: view=%d dirSel=%q, want all", len(m.view), m.dirSel)
+	}
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyTab})
+	if m.dirSel != "/w/alpha" || len(m.view) != 1 {
+		t.Errorf("tab: dirSel=%q view=%d, want alpha scoped to 1", m.dirSel, len(m.view))
+	}
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyTab})
+	if m.dirSel != "/w/beta" || len(m.view) != 2 {
+		t.Errorf("tab: dirSel=%q view=%d, want beta scoped to 2", m.dirSel, len(m.view))
+	}
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyTab}) // wraps back to all
+	if m.dirSel != "" || len(m.view) != 3 {
+		t.Errorf("wrap: dirSel=%q view=%d, want all", m.dirSel, len(m.view))
+	}
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if m.dirSel != "/w/beta" {
+		t.Errorf("shift+tab from all should land on the last dir, got %q", m.dirSel)
+	}
+}
+
+func TestScopedRowsDropTheDirPrefix(t *testing.T) {
+	m := dirModel(t, "/w/alpha")
+	if got := m.rowName(m.all[0]); got != "alpha/a" {
+		t.Errorf("unscoped rowName = %q, want alpha/a", got)
+	}
+	m.dirSel = "/w/alpha"
+	if got := m.rowName(m.all[0]); got != "a" {
+		t.Errorf("scoped rowName = %q, want a", got)
+	}
+}
+
+func TestSelectedDirFallsBackToAllWhenEmpty(t *testing.T) {
+	m := dirModel(t, "/w/alpha", "/w/beta")
+	m.dirSel = "/w/beta"
+	m.all = m.all[:1] // beta's session is gone
+	m.recompute()
+	if m.dirSel != "" || len(m.view) != 1 {
+		t.Errorf("dirSel=%q view=%d, want fallback to all", m.dirSel, len(m.view))
+	}
+}
+
+func TestDotKeyCreatesInLaunchDir(t *testing.T) {
+	m := dirModel(t, "/w/alpha")
+	m.launchDir = "/launch/here"
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(".")})
+	if m.mode != modeNewName || m.newKind != kindDir || m.newCWD != "/launch/here" {
+		t.Errorf("mode=%v kind=%v cwd=%q", m.mode, m.newKind, m.newCWD)
+	}
+}
+
+func TestLaunchDirFocusedOnFirstRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		launch  string
+		wantSel string
+	}{
+		{"launch dir has sessions", "/w/beta", "/w/beta"},
+		{"launch dir has none", "/elsewhere", ""},
+	} {
+		m := dirModel(t, "/w/alpha", "/w/beta")
+		m.launchDir, m.focusLaunchDir = tc.launch, true
+		m.feedRefresh()
+		if m.dirSel != tc.wantSel {
+			t.Errorf("%s: dirSel = %q, want %q", tc.name, m.dirSel, tc.wantSel)
+		}
+		if m.focusLaunchDir {
+			t.Errorf("%s: focus should be one-shot", tc.name)
+		}
+	}
+}
+
+func TestDirPaneWidth(t *testing.T) {
+	m := dirModel(t, "/w/alpha")
+	m.width = 160
+	if got := m.dirPaneWidth(); got != 40 {
+		t.Errorf("25%% of 160 = %d, want 40", got)
+	}
+	m.cfg.DirPane.WidthPercent = 0
+	if got := m.dirPaneWidth(); got != 0 {
+		t.Errorf("widthPercent 0 should hide the pane, got %d", got)
+	}
+	m.cfg.DirPane.WidthPercent = 25
+	m.width = 50
+	if got := m.dirPaneWidth(); got != 0 {
+		t.Errorf("narrow terminal should hide the pane, got %d", got)
+	}
+}

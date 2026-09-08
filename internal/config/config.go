@@ -39,6 +39,7 @@ type Config struct {
 	ClaudeBin   string // claude executable ($CLAUDE_BIN still wins)
 	NewSession  NewSession
 	Attach      Attach
+	DirPane     DirPane
 	Preview     Preview
 	List        List
 	Picker      Picker
@@ -75,6 +76,11 @@ type Attach struct {
 	// resize-pane -Z). prefix+z toggles back to the side-by-side split; the
 	// window unzooms itself when the pane closes.
 	PaneZoom bool
+}
+
+// DirPane covers the directory pane on the left of the session list.
+type DirPane struct {
+	WidthPercent int // share of the terminal width; 0 hides the pane
 }
 
 // Preview covers the right-hand pane.
@@ -153,6 +159,7 @@ func Defaults() Config {
 		ClaudeBin:   "claude",
 		NewSession:  NewSession{Model: "claude-fable-5-1", Effort: "max"},
 		Attach:      Attach{TmuxScratch: true, TmuxStyle: "popup", PopupWidth: "100%", PopupHeight: "100%", PaneSize: "75%", PaneZoom: false},
+		DirPane:     DirPane{WidthPercent: 25},
 		Preview: Preview{
 			MinWidth:      100,
 			WidthPercent:  50,
@@ -208,6 +215,7 @@ type file struct {
 	ClaudeBin   *string      `json:"claudeBin"`
 	NewSession  *newSessFile `json:"newSession"`
 	Attach      *attachFile  `json:"attach"`
+	DirPane     *dirPaneFile `json:"dirPane"`
 	Preview     *previewFile `json:"preview"`
 	List        *listFile    `json:"list"`
 	Picker      *pickerFile  `json:"picker"`
@@ -247,6 +255,10 @@ type attachFile struct {
 	PopupHeight *string `json:"popupHeight"`
 	PaneSize    *string `json:"paneSize"`
 	PaneZoom    *bool   `json:"paneZoom"`
+}
+
+type dirPaneFile struct {
+	WidthPercent *int `json:"widthPercent"`
 }
 
 type newSessFile struct {
@@ -331,6 +343,13 @@ func Load() (Config, error) {
 	}
 	if f.ClaudeBin != nil && *f.ClaudeBin != "" {
 		cfg.ClaudeBin = *f.ClaudeBin
+	}
+	if d := f.DirPane; d != nil && d.WidthPercent != nil {
+		if *d.WidthPercent == 0 {
+			cfg.DirPane.WidthPercent = 0 // 0 is a real value: hide the pane
+		} else {
+			l.setRange(&cfg.DirPane.WidthPercent, d.WidthPercent, "dirPane.widthPercent", 10, 50)
+		}
 	}
 	if a := f.Attach; a != nil {
 		if a.TmuxScratch != nil {

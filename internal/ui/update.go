@@ -30,6 +30,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.otherCavs = msg.otherCavs
 		m.states = msg.states
 		m.live = msg.live
+		// `cav` opened from a directory with sessions: select that directory in
+		// the pane once, on the first refresh that can see them.
+		if m.focusLaunchDir && len(m.all) > 0 {
+			m.focusLaunchDir = false
+			if m.hasSessionIn(m.launchDir) {
+				m.dirSel = m.launchDir
+			}
+		}
 		// Expire the footer status note once it has sat unchanged for a while —
 		// action notes ("moved … to the stopped window", "renamed", …) are moment
 		// feedback, not state, and cav otherwise never clears them. Errors persist.
@@ -223,6 +231,20 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+	case "tab":
+		m.cycleDir(1)
+	case "shift+tab":
+		m.cycleDir(-1)
+	case ".":
+		// New session in the directory cav was started from.
+		if m.launchDir != "" {
+			m.newCWD = m.launchDir
+			m.newKind = kindDir
+			m.mode = modeNewName
+			m.input.SetValue("")
+			m.input.Placeholder = "session name (required)…"
+			return m, m.input.Focus()
+		}
 	case "j", "down":
 		m.cursor = clamp(m.cursor+1, 0, lastIndex(len(m.view)))
 	case "k", "up":

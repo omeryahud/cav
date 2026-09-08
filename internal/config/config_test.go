@@ -86,6 +86,29 @@ func TestUnknownKeysIgnored(t *testing.T) {
 	}
 }
 
+func TestDirPaneWidthPercent(t *testing.T) {
+	withConfig(t, "")
+	cfg, _ := Load()
+	if cfg.DirPane.WidthPercent != 25 {
+		t.Errorf("default = %d, want 25", cfg.DirPane.WidthPercent)
+	}
+	withConfig(t, `{"dirPane": {"widthPercent": 30}}`)
+	cfg, err := Load()
+	if err != nil || cfg.DirPane.WidthPercent != 30 {
+		t.Errorf("override: %d err=%v", cfg.DirPane.WidthPercent, err)
+	}
+	withConfig(t, `{"dirPane": {"widthPercent": 0}}`)
+	cfg, err = Load()
+	if err != nil || cfg.DirPane.WidthPercent != 0 {
+		t.Errorf("0 should hide the pane without complaint: %d err=%v", cfg.DirPane.WidthPercent, err)
+	}
+	withConfig(t, `{"dirPane": {"widthPercent": 80}}`)
+	cfg, err = Load()
+	if err == nil || cfg.DirPane.WidthPercent != 25 {
+		t.Errorf("out of range should be rejected keeping 25: %d err=%v", cfg.DirPane.WidthPercent, err)
+	}
+}
+
 func TestAttachTmuxScratch(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()
