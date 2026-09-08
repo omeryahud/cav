@@ -93,13 +93,13 @@ func (m *Model) buildDirTree() []dirNode {
 	for r := range byRepo {
 		repos = append(repos, r)
 	}
-	sort.Slice(repos, func(i, j int) bool { return leafLower(repos[i]) < leafLower(repos[j]) })
+	sort.Slice(repos, func(i, j int) bool { return lessDir(repos[i], repos[j]) })
 
 	for _, repo := range repos {
 		nodes = append(nodes, m.repoNodes(repo, byRepo[repo], subtree)...)
 	}
 
-	sort.Slice(nonGit, func(i, j int) bool { return leafLower(nonGit[i]) < leafLower(nonGit[j]) })
+	sort.Slice(nonGit, func(i, j int) bool { return lessDir(nonGit[i], nonGit[j]) })
 	for _, cwd := range nonGit {
 		nodes = append(nodes, dirNode{path: cwd, label: dirBase(cwd), kind: nodePlain, count: cnt[cwd]})
 	}
@@ -193,7 +193,7 @@ func (m *Model) repoNodes(repo string, cwds map[string]bool, subtree func(string
 				childs = append(childs, q)
 			}
 		}
-		sort.Slice(childs, func(i, j int) bool { return leafLower(childs[i]) < leafLower(childs[j]) })
+		sort.Slice(childs, func(i, j int) bool { return lessDir(childs[i], childs[j]) })
 		for _, q := range childs {
 			emit(q, depth+1)
 		}
@@ -208,7 +208,7 @@ func (m *Model) repoNodes(repo string, cwds map[string]bool, subtree func(string
 		if (roots[i] == repo) != (roots[j] == repo) {
 			return roots[i] == repo // the main checkout first
 		}
-		return leafLower(roots[i]) < leafLower(roots[j])
+		return lessDir(roots[i], roots[j])
 	})
 	for _, r := range roots {
 		emit(r, 0)
@@ -217,6 +217,18 @@ func (m *Model) repoNodes(repo string, cwds map[string]bool, subtree func(string
 }
 
 func leafLower(p string) string { return strings.ToLower(dirBase(p)) }
+
+// lessDir is a total order for directory paths: by leaf name, then by full
+// path. The full-path tiebreak is load-bearing — without it two paths with the
+// same leaf (e.g. two "substrate" repos) compare equal, and the non-stable
+// sort over Go's randomized map iteration reorders them on every rebuild, so
+// the pane visibly flickers between refreshes.
+func lessDir(a, b string) bool {
+	if la, lb := leafLower(a), leafLower(b); la != lb {
+		return la < lb
+	}
+	return a < b
+}
 
 // visibleNodes is the tree with collapsed subtrees hidden.
 func (m *Model) visibleNodes() []dirNode {

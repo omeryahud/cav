@@ -195,6 +195,38 @@ func TestSameLeafReposDisambiguated(t *testing.T) {
 	}
 }
 
+func TestTreeOrderIsDeterministic(t *testing.T) {
+	// Several repos, two sharing a leaf name, built from maps (random iteration
+	// order). The rendered order must be identical every rebuild — otherwise the
+	// pane flickers between refreshes.
+	m := openModel(t)
+	m.input = textinput.New()
+	cwds := []string{"/a/substrate", "/b/substrate", "/x/agents", "/y/cav", "/z/rl"}
+	m.repoOf = map[string]string{}
+	m.worktrees = map[string][]claude.Worktree{}
+	for i, c := range cwds {
+		m.repoOf[c] = c
+		m.worktrees[c] = []claude.Worktree{{Path: c, Branch: "main"}}
+		m.all = append(m.all, claude.Session{SessionID: string(rune('a' + i)), Name: "s", Kind: "background", Status: "idle", CWD: c})
+	}
+	m.recompute()
+
+	first := pathSeq(m.buildDirTree())
+	for i := 0; i < 50; i++ {
+		if got := pathSeq(m.buildDirTree()); got != first {
+			t.Fatalf("tree order changed between rebuilds:\n first=%s\n got  =%s", first, got)
+		}
+	}
+}
+
+func pathSeq(nodes []dirNode) string {
+	ps := make([]string, len(nodes))
+	for i, n := range nodes {
+		ps[i] = n.path
+	}
+	return strings.Join(ps, "|")
+}
+
 func TestTreeSingleWorktreeCollapses(t *testing.T) {
 	repo := "/r/ai-courses"
 	m := treeModel(t, repo, []claude.Worktree{{Path: repo, Branch: "main"}}, repo, repo)
