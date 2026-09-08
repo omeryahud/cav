@@ -429,6 +429,24 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cp := *s
 		m.pending = &cp
 		m.mode = modeConfirm
+	case "D":
+		// Remove every session in a directory to the stopped window (bulk d):
+		// the directory selected in the pane, or the highlighted session's when
+		// on "all". Non-destructive, exactly like d per session.
+		if m.stoppedView {
+			break
+		}
+		dir := m.dirSel
+		if dir == "" {
+			if s := m.current(); s != nil {
+				dir = s.CWD
+			}
+		}
+		if dir == "" || !m.hasSessionIn(dir) {
+			break
+		}
+		m.pendingDir = dir
+		m.mode = modeConfirm
 	case "l":
 		s := m.current()
 		if s == nil {
@@ -887,7 +905,77 @@ func (m *Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// removeOne moves one session to the stopped window, exactly as the d confirm
+// does: a brought-back (unparked) session returns there, a live one is stopped,
+// any other is marked dismissed. It sets the footer status and returns the stop
+// command when one is needed. Shared by the single d and the bulk D confirms.
+func (m *Model) removeOne(s claude.Session) tea.Cmd {
+	if m.unparked.Has(s.SessionID) {
+		if err := m.unparked.Remove(s.SessionID); err != nil {
+			m.err = err
+			return nil
+		}
+		m.status = "moved " + m.displayName(s) + " back to the stopped window (s)"
+		return nil
+	}
+	// Persist the display name cav-locally so the stopped-window entry doesn't
+	// revert to the short id (a live session's daemon name often isn't in
+	// state.json). Only when there's no override yet and the name is real.
+	if m.names.Get(s.SessionID) == "" {
+		if n := m.displayName(s); n != s.Short() {
+			_ = m.names.Set(s.SessionID, n)
+		}
+	}
+	if hasLiveWorker(s) {
+		m.justStopped[s.SessionID] = true // hide now; refresh reconciles once state.json updates
+		m.status = "stopping " + m.displayName(s) + "…"
+		return stopCmd(m.jobID(&s))
+	}
+	if err := m.dismissed.Add(s.SessionID); err != nil {
+		m.err = err
+		return nil
+	}
+	m.status = "moved " + m.displayName(s) + " to the stopped window (press s)"
+	return nil
+}
+
+// dirSessions returns the sessions in the current window that live in cwd.
+func (m *Model) dirSessions(cwd string) []claude.Session {
+	var out []claude.Session
+	for _, s := range m.all {
+		if s.CWD == cwd && m.isStopped(s) == m.stoppedView && !m.hiddenPendingClone(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Bulk directory remove (D): move every session in the directory to the
+	// stopped window, each via removeOne.
+	if m.pendingDir != "" {
+		dir := m.pendingDir
+		m.mode, m.pendingDir = modeList, ""
+		switch msg.String() {
+		case "y", "Y", "enter":
+		default:
+			return m, nil
+		}
+		var cmds []tea.Cmd
+		n := 0
+		for _, s := range m.dirSessions(dir) {
+			if c := m.removeOne(s); c != nil {
+				cmds = append(cmds, c)
+			}
+			n++
+		}
+		if m.dirSel == dir {
+			m.dirSel = "" // the selected directory is now empty: back to all
+		}
+		m.status = fmt.Sprintf("moved %d session(s) in %s to the stopped window (press s)", n, homeShorten(dir))
+		m.recompute()
+		return m, tea.Batch(cmds...)
+	}
 	// Power-save confirms (x/z/Z) — distinct from the single-session d confirm.
 	if m.pendingKill != "" {
 		mode := m.pendingKill
@@ -949,43 +1037,9 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s == nil {
 			return m, nil
 		}
-		if m.unparked.Has(s.SessionID) {
-			// It was brought back to the main pane (b); d returns it to the stopped window.
-			if err := m.unparked.Remove(s.SessionID); err != nil {
-				m.err = err
-				return m, nil
-			}
-			m.status = "moved " + m.displayName(*s) + " back to the stopped window (s)"
-			m.recompute()
-			return m, nil
-		}
-		// Persist the display name cav-locally so it survives the session going
-		// on-disk: a live session's daemon name (from `agents --json`) often isn't
-		// written to the job's state.json, so without this the stopped-window entry
-		// would revert to the short id. Only when there's no rename override yet and
-		// the name is a real one (not just the short id).
-		if m.names.Get(s.SessionID) == "" {
-			if n := m.displayName(*s); n != s.Short() { // current or last-seen name
-				_ = m.names.Set(s.SessionID, n)
-			}
-		}
-		if hasLiveWorker(*s) {
-			m.justStopped[s.SessionID] = true // hide now; refresh reconciles once state.json updates
-			m.status = "stopping " + m.displayName(*s) + "…"
-			m.recompute()
-			return m, stopCmd(m.jobID(s))
-		}
-		// No live worker: `claude stop` would be a no-op (and the session would
-		// reappear in the main list on restart), so mark it cav-locally. That moves
-		// it to the stopped window (see isStopped) — out of the main list but still
-		// visible and resumable there — and the mark survives restart.
-		if err := m.dismissed.Add(s.SessionID); err != nil {
-			m.err = err
-			return m, nil
-		}
-		m.status = "moved " + m.displayName(*s) + " to the stopped window (press s)"
+		cmd := m.removeOne(*s)
 		m.recompute()
-		return m, nil
+		return m, cmd
 	default:
 		m.mode = modeList
 		m.pending = nil

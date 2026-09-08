@@ -160,6 +160,62 @@ func TestLaunchDirFocusedOnFirstRefresh(t *testing.T) {
 	}
 }
 
+func TestRemoveDirectoryMovesAllToStopped(t *testing.T) {
+	m := dirModel(t, "/w/alpha", "/w/alpha", "/w/beta")
+	m.all[0].Status = "idle" // live -> stop
+	m.all[1].Status = ""     // dead -> dismiss
+	m.roster = claude.Roster{m.all[0].SessionID: "job0"}
+	m.recompute()
+
+	m.dirSel = "/w/alpha"
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	if m.mode != modeConfirm || m.pendingDir != "/w/alpha" {
+		t.Fatalf("D should arm the confirm, mode=%v pendingDir=%q", m.mode, m.pendingDir)
+	}
+	m.handleConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modeList || m.pendingDir != "" {
+		t.Errorf("confirm should clear pendingDir, mode=%v pendingDir=%q", m.mode, m.pendingDir)
+	}
+	if !m.justStopped[m.all[0].SessionID] {
+		t.Error("the live alpha session should be optimistically stopped")
+	}
+	if !m.dismissed.Has(m.all[1].SessionID) {
+		t.Error("the dead alpha session should be dismissed")
+	}
+	if m.dismissed.Has(m.all[2].SessionID) || m.justStopped[m.all[2].SessionID] {
+		t.Error("the beta session must be untouched")
+	}
+	if m.dirSel != "" {
+		t.Errorf("emptied selection should fall back to all, got %q", m.dirSel)
+	}
+}
+
+func TestRemoveDirectoryCancelDoesNothing(t *testing.T) {
+	m := dirModel(t, "/w/alpha")
+	m.all[0].Status = ""
+	m.dirSel = "/w/alpha"
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	m.handleConfirmKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if m.mode != modeList || m.pendingDir != "" {
+		t.Errorf("n should cancel: mode=%v pendingDir=%q", m.mode, m.pendingDir)
+	}
+	if m.dismissed.Has(m.all[0].SessionID) {
+		t.Error("cancel must not remove anything")
+	}
+}
+
+func TestRemoveDirectoryOnAllTargetsHighlightedDir(t *testing.T) {
+	m := dirModel(t, "/w/alpha", "/w/beta")
+	m.all[0].Status, m.all[1].Status = "", ""
+	m.recompute()
+	m.cursor = 0
+	target := m.view[0].CWD
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	if m.pendingDir != target {
+		t.Errorf("on all, D targets the highlighted session's dir %q, got %q", target, m.pendingDir)
+	}
+}
+
 func TestDirPaneWidth(t *testing.T) {
 	m := dirModel(t, "/w/alpha")
 	m.width = 160

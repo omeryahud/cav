@@ -335,6 +335,14 @@ visible at a glance.
   there, surviving restart — needing only the session id, so it works without a job
   id. Non-destructive: the session stays on disk; undo by editing that file. The
   confirm prompt names which action will run.
+- **Remove directory** (`D`): does the `d` action for **every** session in a
+  directory at once — the directory selected in the pane, or the highlighted
+  session's when on `all` — moving them all to the stopped window
+  (`removeOne`, the extracted per-session helper `d` also uses). A confirm
+  prompt names the directory and count and warns how many are busy. Fully
+  reversible: the whole directory shows up in the stopped window (`s`),
+  recoverable with `b` or resume. Nothing on disk is deleted; the real
+  directory is never touched. The emptied selection falls back to `all`.
 - **Power save** (`x` / `z` / `Z`): stops session **processes** to spare the
   battery — `x` the highlighted session only, `z` every live worker that isn't
   busy ("waiting" counts as idle; it isn't executing), `Z` all of them, busy
@@ -389,7 +397,8 @@ visible at a glance.
   `C` clone (independent copy, top-level) · `x` stop the highlighted session's
   process · `z`/`Z` stop idle/all session
   processes (power save; they stay in the main pane, `↵` respawns) ·
-  `d` remove · `b` bring back (a
+  `d` remove · `D` remove every session in the selected directory (to the
+  stopped window, reversible) · `b` bring back (a
   stopped session to the main pane) · `l` logs ·
   `o` group (cycle dir→status / status→dir / recently-entered / alphabetical) ·
   `s` stopped-window toggle · `p` preview · `^u`/`^d` scroll preview ·

@@ -568,6 +568,21 @@ func (m *Model) pickerLines(h, width int) []string {
 func (m *Model) footerBlock() string {
 	var status string
 	switch {
+	case m.mode == modeConfirm && m.pendingDir != "":
+		sessions := m.dirSessions(m.pendingDir)
+		busy := 0
+		for _, s := range sessions {
+			if s.Status == "busy" {
+				busy++
+			}
+		}
+		prompt := fmt.Sprintf("Move all %d session(s) in %s to the stopped window? (y/n — reversible; resume with s)",
+			len(sessions), homeShorten(m.pendingDir))
+		if busy > 0 {
+			prompt = fmt.Sprintf("Move all %d session(s) in %s to the stopped window? (%d busy) (y/n)",
+				len(sessions), homeShorten(m.pendingDir), busy)
+		}
+		status = warnDot.Render(prompt)
 	case m.mode == modeConfirm && m.pendingKill != "":
 		// Power save (x/z/Z). Counts render fresh each frame, so the prompt
 		// tracks the continuously-refreshing list.
@@ -619,7 +634,7 @@ func (m *Model) helpBar() string {
 	binds := []struct{ k, d string }{
 		{"⇥", "dir"}, {"n", "new"}, {".", "new in cwd"}, {"a", "new here"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
 		{"F", "fork"}, {"C", "clone"},
-		{"d", "remove"}, {"b", "bring back"}, {"x", "stop"}, {"z/Z", "stop idle/all"},
+		{"d", "remove"}, {"D", "remove dir"}, {"b", "bring back"}, {"x", "stop"}, {"z/Z", "stop idle/all"},
 		{"l", "logs"}, {"o", "group"}, {"s", stopped},
 		{"p", "preview"}, {"^u/^d", "scroll"}, {"⇞/⇟", "top/bottom"}, {"^↑/↓", "±5"}, {"/", "filter"}, {"f", "search"},
 		{"esc", "clear"}, {"r", "refresh"}, {"q", "quit"},

@@ -171,6 +171,7 @@ type Model struct {
 	pendingClone   map[string]string // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
 	pending        *claude.Session   // session awaiting delete confirmation
 	pendingKill    string            // bulk power-save awaiting confirmation: "idle" (z) or "all" (Z)
+	pendingDir     string            // cwd whose whole directory is awaiting bulk-remove confirmation (D)
 	autoOpen       string            // session name from `cav -o`; opened on the first refresh that resolves it
 	initNewDir     string            // `cav -n`: create a session here at startup ("" = off)
 	initNewName    string            // optional name for the -n session
