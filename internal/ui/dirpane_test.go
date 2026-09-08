@@ -189,6 +189,26 @@ func TestTreeScopingIsSubtreePrefix(t *testing.T) {
 	}
 }
 
+func TestCollapseTreeFoldsEveryRepo(t *testing.T) {
+	repo := "/s/substrate"
+	research := "/s/substrate/research"
+	agents := "/s/substrate/research/agents"
+	m := treeModel(t, repo, []claude.Worktree{{Path: repo, Branch: "main"}}, research, agents)
+	// Fully expanded: research and agents are visible.
+	if _, ok := nodeAt(m.visibleNodes(), agents); !ok {
+		t.Fatal("agents should be visible before collapse")
+	}
+	m.collapseTree()
+	vis := m.visibleNodes()
+	// Only the repo top row remains (all + substrate); its children are folded.
+	if _, ok := nodeAt(vis, research); ok {
+		t.Error("research should be hidden after collapseTree")
+	}
+	if _, ok := nodeAt(vis, repo); !ok {
+		t.Error("the repo top row should still be visible after collapse")
+	}
+}
+
 func TestFoldHidesChildren(t *testing.T) {
 	repo := "/s/substrate"
 	research := "/s/substrate/research"

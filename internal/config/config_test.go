@@ -86,6 +86,18 @@ func TestUnknownKeysIgnored(t *testing.T) {
 	}
 }
 
+func TestDirPaneStartCollapsed(t *testing.T) {
+	withConfig(t, "")
+	if cfg, _ := Load(); cfg.DirPane.StartCollapsed {
+		t.Error("startCollapsed should default off")
+	}
+	withConfig(t, `{"dirPane": {"startCollapsed": true}}`)
+	cfg, err := Load()
+	if err != nil || !cfg.DirPane.StartCollapsed {
+		t.Errorf("startCollapsed override failed: %v err=%v", cfg.DirPane.StartCollapsed, err)
+	}
+}
+
 func TestDirPaneWidthPercent(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()

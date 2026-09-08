@@ -266,6 +266,19 @@ func (m *Model) cycleDir(d int) {
 	m.recompute()
 }
 
+// collapseTree folds every foldable node closed (the whole tree collapsed to
+// its top-level rows). "all" and leaf nodes have no children to fold.
+func (m *Model) collapseTree() {
+	if m.dirCollapsed == nil {
+		m.dirCollapsed = map[string]bool{}
+	}
+	for _, n := range m.buildDirTree() {
+		if n.parent && n.path != "" {
+			m.dirCollapsed[n.path] = true
+		}
+	}
+}
+
 // toggleFold collapses or expands the selected node.
 func (m *Model) toggleFold() {
 	n := m.selectedNode()

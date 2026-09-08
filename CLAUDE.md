@@ -501,6 +501,7 @@ visible at a glance.
   | `attach.paneSize` | `75%` | the session pane's share of the window (`pane` style) |
   | `attach.paneZoom` | `false` | zoom the session pane on open (fullscreen; `prefix+z` reveals the split) |
   | `dirPane.widthPercent` | `25` | width of the directory pane on the left (10 to 50); `0` hides it |
+  | `dirPane.startCollapsed` | `false` | fold every repo's children on startup (`space` expands) |
   | `colors.*` | see below | the palette, by role |
 
   **Colors** take an ANSI 256 index (`42`) or a hex string (`"#5fd700"`); text

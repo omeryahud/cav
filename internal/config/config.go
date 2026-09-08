@@ -80,7 +80,8 @@ type Attach struct {
 
 // DirPane covers the directory pane on the left of the session list.
 type DirPane struct {
-	WidthPercent int // share of the terminal width; 0 hides the pane
+	WidthPercent   int  // share of the terminal width; 0 hides the pane
+	StartCollapsed bool // fold every repo's children on startup
 }
 
 // Preview covers the right-hand pane.
@@ -160,7 +161,7 @@ func Defaults() Config {
 		ClaudeBin:   "claude",
 		NewSession:  NewSession{Model: "claude-fable-5-1", Effort: "max"},
 		Attach:      Attach{TmuxScratch: true, TmuxStyle: "popup", PopupWidth: "100%", PopupHeight: "100%", PaneSize: "75%", PaneZoom: false},
-		DirPane:     DirPane{WidthPercent: 25},
+		DirPane:     DirPane{WidthPercent: 25, StartCollapsed: false},
 		Preview: Preview{
 			MinWidth:      100,
 			WidthPercent:  50,
@@ -261,7 +262,8 @@ type attachFile struct {
 }
 
 type dirPaneFile struct {
-	WidthPercent *int `json:"widthPercent"`
+	WidthPercent   *int  `json:"widthPercent"`
+	StartCollapsed *bool `json:"startCollapsed"`
 }
 
 type newSessFile struct {
@@ -353,6 +355,9 @@ func Load() (Config, error) {
 		} else {
 			l.setRange(&cfg.DirPane.WidthPercent, d.WidthPercent, "dirPane.widthPercent", 10, 50)
 		}
+	}
+	if d := f.DirPane; d != nil && d.StartCollapsed != nil {
+		cfg.DirPane.StartCollapsed = *d.StartCollapsed
 	}
 	if a := f.Attach; a != nil {
 		if a.TmuxScratch != nil {

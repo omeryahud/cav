@@ -186,6 +186,7 @@ type Model struct {
 	repoOf         map[string]string            // session cwd -> its git repo root ("" = not a repo)
 	worktrees      map[string][]claude.Worktree // repo root -> its git worktrees
 	focusLaunchDir bool                         // one-shot: select launchDir in the pane on the first refresh that has it
+	collapseOnLoad bool                         // one-shot: fold every repo's children on the first refresh with nodes
 	selectJobID    string                       // job id of a just-created session to highlight once it appears
 	pendingClone   map[string]string            // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
 	pending        *claude.Session              // session awaiting delete confirmation
@@ -253,6 +254,7 @@ func New(opts Options) (*Model, error) {
 		attachNew:      opts.AttachNew,
 		launchDir:      opts.LaunchDir,
 		focusLaunchDir: opts.LaunchDir != "",
+		collapseOnLoad: cfg.DirPane.StartCollapsed,
 		names:          names.Load(),
 		labels:         labels.Load(),
 		dismissed:      dismiss.Load(),

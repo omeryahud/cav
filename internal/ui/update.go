@@ -32,12 +32,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.worktrees = msg.worktrees
 		m.states = msg.states
 		m.live = msg.live
-		// `cav` opened from a directory with sessions: select that directory in
-		// the pane once, on the first refresh that can see them.
-		if m.focusLaunchDir && len(m.all) > 0 {
-			m.focusLaunchDir = false
-			if m.hasSessionIn(m.launchDir) {
-				m.dirSel = m.launchDir
+		// One-shots on the first refresh that can see sessions: fold every repo's
+		// children (dirPane.startCollapsed), then select the launch directory.
+		if len(m.all) > 0 {
+			if m.collapseOnLoad {
+				m.collapseOnLoad = false
+				m.collapseTree()
+			}
+			if m.focusLaunchDir {
+				m.focusLaunchDir = false
+				if m.hasSessionIn(m.launchDir) {
+					m.dirSel = m.launchDir
+				}
 			}
 		}
 		// Expire the footer status note once it has sat unchanged for a while —
