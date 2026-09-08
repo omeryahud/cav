@@ -43,6 +43,8 @@ after.
   - `client.go` — `List`, `Stop`, `Create`, `AttachCmd`, `ResumeAttachCmd`,
     `LogsShellCmd`, `Logs`, `Roster`/`LoadRoster`/`JobID`, `JobState`,
     `JobRecord`/`ScanJobs`.
+  - `git.go` — git worktree access for the directory tree (`RepoRoot`,
+    `Worktrees`, `DefaultBranch`, `AddWorktree`, `RemoveWorktree`).
 - `internal/ui/` — the Bubble Tea app.
   - `model.go` — `Model`, messages, commands (incl. the `doRefresh` merge run by
     the background `refreshLoop`), the `statusOf`/`statusRank`/`bucketLabel`
@@ -156,23 +158,44 @@ visible at a glance.
 ## UI behavior
 
 - **Directory pane** (left, `dirPane.widthPercent` of the width, default 25%;
-  `0` hides it, and it also hides below 60 columns): lists every directory
-  that has a session in the current window, `all` first then alphabetical by
-  leaf name (`dirEntries`; two directories with the same leaf show as
-  `parent/leaf`), each with its session count. `tab`/`shift+tab` move the
-  selection (`cycleDir`, wrapping). The session list on the right is scoped
-  to the selected directory (`m.dirSel`, matched by full cwd in `recompute`):
-  the title reads `N of M`, rows drop the `dir/` prefix (`rowName`), and the
-  grouped view keeps only its status headers. A selection whose sessions all
-  disappear falls back to `all`. The `/` filter and `f` search narrow **both
-  panes**: `passesFilter` is shared by `dirEntries` and `recompute`, so the
-  pane lists only directories that still have a matching session, with
-  filtered counts, and a selected directory left with no match falls back to
-  `all`. To walk filtered directories: `/`, type, `tab` to confirm, then
-  `tab`/`shift+tab`. On startup the directory cav was launched
-  from is selected if it has sessions (`focusLaunchDir`, a one-shot on the
-  first refresh that sees any session; `Options.LaunchDir` comes from `main`).
-  The session area itself is unchanged: `sessionArea` renders the list, or
+  `0` hides it, and it also hides below 60 columns) is a **tree**
+  (`buildDirTree` in `dirpane.go`): an `all` row, then one grouping per git
+  repo that has an active session, then non-git session directories as flat
+  rows. Under a repo the tree shows its **git worktrees** (from
+  `git worktree list`, main plus each linked one, linked marked `⑂`) and its
+  **session subdirectories** nested by path, so a session in `repo/pkg/api`
+  appears under `repo → pkg → api`. A repo with a single worktree and no
+  subdirs collapses to one row; with several worktrees it gets a grouping row.
+  Empty worktrees (no session) are shown too, so `.`/`W` can target them.
+  Counts are **subtree totals**. `tab`/`shift+tab` walk visible rows
+  (`cycleDir`), `space` folds a node (`toggleFold`, `m.dirCollapsed`). The
+  right list is scoped to the selection's **subtree** (`m.dirSel`, prefix
+  match `under()` in `recompute`); the title reads `N of M` and rows drop the
+  `dir/` prefix. `/` and `f` narrow both panes via the shared `passesFilter`.
+  A selection whose subtree empties out falls back to `all` — unless it is a
+  known (possibly empty) worktree (`isWorktreePath`), which stays selectable.
+  On startup the launch directory is selected if it has sessions
+  (`focusLaunchDir`; `Options.LaunchDir` from `main`).
+- **Worktree discovery** runs in the background refresh (`scanWorktrees`):
+  a cwd's repo root is cached permanently (`git rev-parse`), and
+  `git worktree list` per repo is throttled to at most every 15s (repos new
+  since the last scan are filled in immediately). All git access is in
+  `internal/claude/git.go` (`RepoRoot`, `Worktrees`, `DefaultBranch`,
+  `BranchAt`, `AddWorktree`, `RemoveWorktree`); `execGit` is a package var the
+  tests stub, with a real-git integration test for the add/remove seam.
+- **Create worktree** (`W`): on the selected node's repo, runs the required
+  name step, then `git worktree add -b <name> <repo>/.claude/worktrees/<name>
+  <base>`. The base branch follows the node: a worktree node bases on **its
+  own branch**, anything else on the repo's **default branch**
+  (`worktreeBase` + `DefaultBranch`). The new worktree is surfaced immediately
+  and selected; press `.` to start a session in it. `W` off a non-git node
+  reports and does nothing.
+- **Delete worktree** (`X`): removes the selected **linked** worktree
+  (`git worktree remove`, no `--force`, so git refuses a dirty one; the branch
+  is kept). Refused on the main checkout, and refused while any session (active
+  or stopped) still lives under it (`anySessionUnder`) — remove those first
+  with `D`. Confirm prompt names the worktree and branch.
+- The session area itself is unchanged: `sessionArea` renders the list, or
   list + preview when the remaining width still clears `preview.minWidth`.
 - **Grouping** (`o` cycles four `groupMode`s): **status→dir** (default; by
   status, then cwd) → **recent** (flat, most recently entered first) → **none**
@@ -389,7 +412,8 @@ visible at a glance.
   findable by label.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `tab`/`shift+tab` select a directory in the pane (scopes
-  the list) · `n` new (highlights it) · `.` new session **in the directory
+  the list; `␣` folds a tree node) · `W` create a git worktree · `X` delete the
+  selected linked worktree · `n` new (highlights it) · `.` new session **in the directory
   selected in the pane** (on `all`: the launch directory) · `a` new session **in the
   highlighted session's directory** (skips the picker, straight to the name
   step) · `N` new project (new dir) · `R` rename ·

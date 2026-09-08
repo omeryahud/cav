@@ -69,10 +69,11 @@ func groupingFromConfig(v string) grouping {
 type createKind int
 
 const (
-	kindDir     createKind = iota // n or a: session in an existing directory
-	kindProject                   // N: session in a new directory under projectRoot
-	kindFork                      // F: child session nested under the parent
-	kindClone                     // C: independent copy of the parent
+	kindDir      createKind = iota // n or a: session in an existing directory
+	kindProject                    // N: session in a new directory under projectRoot
+	kindFork                       // F: child session nested under the parent
+	kindClone                      // C: independent copy of the parent
+	kindWorktree                   // W: create a git worktree (no session)
 )
 
 type mode int
@@ -98,6 +99,8 @@ type (
 		states    map[string]string
 		live      map[string]bool // sessionIds with a live daemon worker (vs on-disk only)
 		otherCavs int             // other running cav processes (forgotten instances burn polls)
+		repoOf    map[string]string
+		worktrees map[string][]claude.Worktree
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
@@ -132,6 +135,17 @@ type (
 		cloneName  string // clone only: the intended "copy-…" name ("" for a fork)
 		record     bool   // true = fork (nest); false = clone (independent)
 	}
+	// worktreeAddedMsg follows W: a git worktree was created at path.
+	worktreeAddedMsg struct {
+		path   string
+		repo   string
+		branch string
+	}
+	// worktreeRemovedMsg follows X: the git worktree at path was removed.
+	worktreeRemovedMsg struct {
+		path string
+		repo string
+	}
 )
 
 // Model is the cav application state.
@@ -158,24 +172,29 @@ type Model struct {
 	cursor         int
 	mode           mode
 	input          textinput.Model
-	filter         string            // active metadata filter
-	matchIDs       map[string]bool   // active deep-search result set (nil = inactive)
-	newCWD         string            // cwd for a pending new session
-	newName        string            // session name entered in the create wizard
-	newKind        createKind        // which create flow the wizard is running (n/a, N, F, C)
-	newParent      *claude.Session   // fork/clone source, snapshotted at keypress like m.pending
-	launchDir      string            // directory cav was started from (. creates here)
-	dirSel         string            // cwd selected in the directory pane; "" = all
-	focusLaunchDir bool              // one-shot: select launchDir in the pane on the first refresh that has it
-	selectJobID    string            // job id of a just-created session to highlight once it appears
-	pendingClone   map[string]string // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
-	pending        *claude.Session   // session awaiting delete confirmation
-	pendingKill    string            // bulk power-save awaiting confirmation: "idle" (z) or "all" (Z)
-	pendingDir     string            // cwd whose whole directory is awaiting bulk-remove confirmation (D)
-	autoOpen       string            // session name from `cav -o`; opened on the first refresh that resolves it
-	initNewDir     string            // `cav -n`: create a session here at startup ("" = off)
-	initNewName    string            // optional name for the -n session
-	attachNew      bool              // `-a`: attach to the -n session once it registers
+	filter         string                       // active metadata filter
+	matchIDs       map[string]bool              // active deep-search result set (nil = inactive)
+	newCWD         string                       // cwd for a pending new session
+	newName        string                       // session name entered in the create wizard
+	newKind        createKind                   // which create flow the wizard is running (n/a, N, F, C)
+	newParent      *claude.Session              // fork/clone source, snapshotted at keypress like m.pending
+	wtRepo, wtBase string                       // W: repo root and base branch for the pending worktree
+	launchDir      string                       // directory cav was started from (. creates here)
+	dirSel         string                       // cwd selected in the directory pane; "" = all
+	dirCollapsed   map[string]bool              // tree nodes folded closed in the directory pane
+	repoOf         map[string]string            // session cwd -> its git repo root ("" = not a repo)
+	worktrees      map[string][]claude.Worktree // repo root -> its git worktrees
+	focusLaunchDir bool                         // one-shot: select launchDir in the pane on the first refresh that has it
+	selectJobID    string                       // job id of a just-created session to highlight once it appears
+	pendingClone   map[string]string            // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
+	pending        *claude.Session              // session awaiting delete confirmation
+	pendingKill    string                       // bulk power-save awaiting confirmation: "idle" (z) or "all" (Z)
+	pendingDir     string                       // cwd whose whole directory is awaiting bulk-remove confirmation (D)
+	pendingWT      dirNode                      // linked worktree awaiting delete confirmation (X); path "" = none
+	autoOpen       string                       // session name from `cav -o`; opened on the first refresh that resolves it
+	initNewDir     string                       // `cav -n`: create a session here at startup ("" = off)
+	initNewName    string                       // optional name for the -n session
+	attachNew      bool                         // `-a`: attach to the -n session once it registers
 
 	// new-session directory picker
 	pickAll []string
@@ -337,7 +356,53 @@ func doRefresh() refreshResult {
 		seen[j.SessionID] = true
 	}
 
-	return refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet, otherCavs: countOtherCavs()}
+	repoOf, worktrees := scanWorktrees(sessions)
+	return refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet,
+		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees}
+}
+
+// Worktree discovery is cached and throttled: a cwd's repo root never changes,
+// and `git worktree list` per repo is heavier, so it reruns at most every 15s
+// (repos new since the last scan are filled in immediately). The refresh loop
+// is single-goroutine, so these package vars need no lock.
+var (
+	cwdRepoCache = map[string]string{}
+	wtCache      = map[string][]claude.Worktree{}
+	wtScanAt     time.Time
+)
+
+func scanWorktrees(sessions []claude.Session) (map[string]string, map[string][]claude.Worktree) {
+	repoOf := map[string]string{}
+	repos := map[string]bool{}
+	for _, s := range sessions {
+		r, ok := cwdRepoCache[s.CWD]
+		if !ok {
+			if root, isRepo := claude.RepoRoot(s.CWD); isRepo {
+				r = root
+			}
+			cwdRepoCache[s.CWD] = r
+		}
+		repoOf[s.CWD] = r
+		if r != "" {
+			repos[r] = true
+		}
+	}
+	full := time.Since(wtScanAt) > 15*time.Second
+	if full {
+		wtScanAt = time.Now()
+	}
+	out := map[string][]claude.Worktree{}
+	for r := range repos {
+		if !full {
+			if cached, ok := wtCache[r]; ok {
+				out[r] = cached
+				continue
+			}
+		}
+		out[r] = claude.Worktrees(r)
+	}
+	wtCache = out
+	return repoOf, out
 }
 
 // activity tracks the last user input, shared between the update loop (which
@@ -643,6 +708,29 @@ func (m *Model) displayName(s claude.Session) string {
 
 // dirBase is the leaf directory name of a cwd (".../agent-sandbox" →
 // "agent-sandbox"), or "" if there isn't a meaningful one.
+// removeWorktreeCmd removes a git worktree (keeping its branch). git refuses a
+// dirty worktree, so uncommitted work is protected; the error surfaces.
+func removeWorktreeCmd(repo, path string) tea.Cmd {
+	return func() tea.Msg {
+		if err := claude.RemoveWorktree(repo, path); err != nil {
+			return actionMsg{err: err}
+		}
+		return worktreeRemovedMsg{path: path, repo: repo}
+	}
+}
+
+// addWorktreeCmd creates a git worktree at <repo>/.claude/worktrees/<name> on
+// a new branch <name> based on base, and selects it in the tree once it appears.
+func addWorktreeCmd(repo, name, base string) tea.Cmd {
+	return func() tea.Msg {
+		path := filepath.Join(repo, ".claude", "worktrees", name)
+		if err := claude.AddWorktree(repo, path, name, base); err != nil {
+			return actionMsg{err: err}
+		}
+		return worktreeAddedMsg{path: path, repo: repo, branch: name}
+	}
+}
+
 func dirBase(cwd string) string {
 	switch b := filepath.Base(strings.TrimRight(cwd, "/")); b {
 	case "", ".", "/":
@@ -861,16 +949,16 @@ func subseq(s, q string) bool {
 
 // recompute rebuilds the visible view from the full list + active filters.
 func (m *Model) recompute() {
-	if m.dirSel != "" && !m.hasSessionIn(m.dirSel) {
-		m.dirSel = "" // nothing left in the selected directory (gone, or filtered out): back to all
+	if m.dirSel != "" && !m.hasSessionIn(m.dirSel) && !m.isWorktreePath(m.dirSel) {
+		m.dirSel = "" // nothing left under the selection (and not an empty worktree): back to all
 	}
 	v := make([]claude.Session, 0, len(m.all))
 	for _, s := range m.all {
 		if !m.passesFilter(s) {
 			continue
 		}
-		if m.dirSel != "" && s.CWD != m.dirSel {
-			continue // outside the directory selected in the pane
+		if m.dirSel != "" && !under(s.CWD, m.dirSel) {
+			continue // outside the subtree selected in the pane
 		}
 		v = append(v, s)
 	}

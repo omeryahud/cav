@@ -568,8 +568,15 @@ func (m *Model) pickerLines(h, width int) []string {
 func (m *Model) footerBlock() string {
 	var status string
 	switch {
+	case m.mode == modeConfirm && m.pendingWT.path != "":
+		branch := m.pendingWT.branch
+		if branch == "" {
+			branch = m.pendingWT.label
+		}
+		status = warnDot.Render(fmt.Sprintf("Delete worktree %s (branch %s)? (y/n — the branch is kept; git refuses if dirty)",
+			m.pendingWT.label, branch))
 	case m.mode == modeConfirm && m.pendingDir != "":
-		sessions := m.dirSessions(m.pendingDir)
+		sessions := m.sessionsUnder(m.pendingDir)
 		busy := 0
 		for _, s := range sessions {
 			if s.Status == "busy" {
@@ -632,7 +639,7 @@ func (m *Model) helpBar() string {
 		stopped = "back"
 	}
 	binds := []struct{ k, d string }{
-		{"⇥", "dir"}, {"n", "new"}, {".", "new in cwd"}, {"a", "new here"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
+		{"⇥", "dir"}, {"␣", "fold"}, {"W", "+worktree"}, {"X", "-worktree"}, {"n", "new"}, {".", "new in cwd"}, {"a", "new here"}, {"N", "new project"}, {"R", "rename"}, {"L", "label"},
 		{"F", "fork"}, {"C", "clone"},
 		{"d", "remove"}, {"D", "remove dir"}, {"b", "bring back"}, {"x", "stop"}, {"z/Z", "stop idle/all"},
 		{"l", "logs"}, {"o", "group"}, {"s", stopped},

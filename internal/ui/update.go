@@ -28,6 +28,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.all = msg.sessions
 		m.roster = msg.roster
 		m.otherCavs = msg.otherCavs
+		m.repoOf = msg.repoOf
+		m.worktrees = msg.worktrees
 		m.states = msg.states
 		m.live = msg.live
 		// `cav` opened from a directory with sessions: select that directory in
@@ -160,6 +162,37 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recompute()
 		return m, nil
 
+	case worktreeRemovedMsg:
+		if wts := m.worktrees[msg.repo]; wts != nil {
+			kept := wts[:0]
+			for _, wt := range wts {
+				if wt.Path != msg.path {
+					kept = append(kept, wt)
+				}
+			}
+			m.worktrees[msg.repo] = kept
+		}
+		wtScanAt = time.Time{}
+		if m.dirSel == msg.path {
+			m.dirSel = ""
+		}
+		m.status = "removed worktree " + dirBase(msg.path)
+		m.recompute()
+		return m, nil
+
+	case worktreeAddedMsg:
+		// Surface the new worktree immediately (append to the cache and force a
+		// full rescan next refresh) and select it so `.` starts a session there.
+		if m.worktrees == nil {
+			m.worktrees = map[string][]claude.Worktree{}
+		}
+		m.worktrees[msg.repo] = append(m.worktrees[msg.repo], claude.Worktree{Path: msg.path, Branch: msg.branch})
+		wtScanAt = time.Time{}
+		m.dirSel = msg.path
+		m.status = "created worktree " + dirBase(msg.path) + " (press . to start a session)"
+		m.recompute()
+		return m, nil
+
 	case createdMsg:
 		// Freshly-created session (n or N). Don't attach — refresh, and once the
 		// new session shows up, highlight it (cursor moves to it; see refreshResult).
@@ -235,6 +268,37 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cycleDir(1)
 	case "shift+tab":
 		m.cycleDir(-1)
+	case " ":
+		m.toggleFold()
+	case "W":
+		// Create a git worktree from the selected node's repo. The name step
+		// (required) names both the worktree directory and its new branch.
+		n := m.selectedNode()
+		repo, base, ok := m.worktreeBase(n)
+		if !ok {
+			m.status = "W: " + n.label + " is not in a git repo"
+			break
+		}
+		m.newKind = kindWorktree
+		m.wtRepo, m.wtBase = repo, base
+		m.mode = modeNewName
+		m.input.SetValue("")
+		m.input.Placeholder = "worktree name (required) · off " + base + "…"
+		return m, m.input.Focus()
+	case "X":
+		// Delete the selected linked worktree (never the main checkout, and only
+		// when nothing depends on its directory).
+		n := m.selectedNode()
+		if n.kind != nodeWorktree || !n.linked {
+			m.status = "X: select a linked worktree to delete"
+			break
+		}
+		if m.anySessionUnder(n.path) {
+			m.status = "X: " + n.label + " still has sessions — remove them first (D)"
+			break
+		}
+		m.pendingWT = n
+		m.mode = modeConfirm
 	case ".":
 		// New session in the directory selected in the pane; on "all", in the
 		// directory cav was started from.
@@ -866,6 +930,13 @@ func (m *Model) handleNewNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, forkCmd(p.SessionID, m.jobID(p), p.CWD, m.displayName(*p), name,
 				m.newKind == kindFork, m.cfg.Timeouts.Command)
 		}
+		if m.newKind == kindWorktree {
+			repo, base := m.wtRepo, m.wtBase
+			m.mode = modeList
+			m.input.Blur()
+			m.status = "creating worktree " + name + " off " + base + "…"
+			return m, addWorktreeCmd(repo, name, base)
+		}
 		m.newName = name
 		m.mode = modeNew
 		m.input.SetValue("")
@@ -939,18 +1010,19 @@ func (m *Model) removeOne(s claude.Session) tea.Cmd {
 	return nil
 }
 
-// dirSessions returns the sessions in the current window that live in cwd.
-func (m *Model) dirSessions(cwd string) []claude.Session {
-	var out []claude.Session
-	for _, s := range m.all {
-		if s.CWD == cwd && m.isStopped(s) == m.stoppedView && !m.hiddenPendingClone(s) {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Delete worktree (X): git worktree remove the selected linked worktree.
+	if m.pendingWT.path != "" {
+		wt := m.pendingWT
+		m.mode, m.pendingWT = modeList, dirNode{}
+		switch msg.String() {
+		case "y", "Y", "enter":
+		default:
+			return m, nil
+		}
+		m.status = "removing worktree " + wt.label + "…"
+		return m, removeWorktreeCmd(wt.repo, wt.path)
+	}
 	// Bulk directory remove (D): move every session in the directory to the
 	// stopped window, each via removeOne.
 	if m.pendingDir != "" {
@@ -963,7 +1035,7 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		var cmds []tea.Cmd
 		n := 0
-		for _, s := range m.dirSessions(dir) {
+		for _, s := range m.sessionsUnder(dir) {
 			if c := m.removeOne(s); c != nil {
 				cmds = append(cmds, c)
 			}
