@@ -380,9 +380,7 @@ func scanWorktrees(sessions []claude.Session) (map[string]string, map[string][]c
 	for _, s := range sessions {
 		r, ok := cwdRepoCache[s.CWD]
 		if !ok {
-			if root, isRepo := claude.RepoRoot(s.CWD); isRepo {
-				r = root
-			}
+			r = claude.MainRoot(s.CWD) // the repo's main checkout, so all its worktrees group together
 			cwdRepoCache[s.CWD] = r
 		}
 		repoOf[s.CWD] = r

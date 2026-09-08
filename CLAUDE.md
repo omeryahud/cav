@@ -183,12 +183,17 @@ visible at a glance.
   On startup the launch directory is selected if it has sessions
   (`focusLaunchDir`; `Options.LaunchDir` from `main`).
 - **Worktree discovery** runs in the background refresh (`scanWorktrees`):
-  a cwd's repo root is cached permanently (`git rev-parse`), and
-  `git worktree list` per repo is throttled to at most every 15s (repos new
-  since the last scan are filled in immediately). All git access is in
-  `internal/claude/git.go` (`RepoRoot`, `Worktrees`, `DefaultBranch`,
-  `BranchAt`, `AddWorktree`, `RemoveWorktree`); `execGit` is a package var the
-  tests stub, with a real-git integration test for the add/remove seam.
+  a cwd's repo is cached permanently as its **main checkout** (`MainRoot` =
+  the first `git worktree list` entry), **not** `git rev-parse
+  --show-toplevel` — inside a linked worktree that returns the worktree's own
+  path, which would orphan the repo's other worktrees as stray top-level
+  `⑂ main`/`⑂ master` rows. Keying by the main checkout groups every worktree
+  of a repo under one node. `git worktree list` per repo is throttled to at
+  most every 15s (repos new since the last scan are filled in immediately).
+  All git access is in `internal/claude/git.go` (`RepoRoot`, `MainRoot`,
+  `Worktrees`, `DefaultBranch`, `BranchAt`, `AddWorktree`, `RemoveWorktree`);
+  `execGit` is a package var the tests stub, with a real-git integration test
+  for the worktree lifecycle and the from-inside-a-worktree grouping.
 - **Create worktree** (`W`): on the selected node's repo, runs the required
   name step, then `git worktree add -b <name> <repo>/.claude/worktrees/<name>
   <base>`. The base branch follows the node: a worktree node bases on **its

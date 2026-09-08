@@ -53,6 +53,14 @@ func TestWorktreeLifecycleReal(t *testing.T) {
 	if b := BranchAt(wtPath); b != "feat" {
 		t.Errorf("BranchAt(feat) = %q", b)
 	}
+	// The real regression: from inside the linked worktree, show-toplevel gives
+	// the worktree, but MainRoot must give the main checkout so the repo groups.
+	if r, _ := RepoRoot(wtPath); r != wtPath {
+		t.Errorf("RepoRoot(worktree) = %q, want the worktree itself %q", r, wtPath)
+	}
+	if got := MainRoot(wtPath); got != dir {
+		t.Errorf("MainRoot(worktree) = %q, want the main checkout %q", got, dir)
+	}
 
 	// A second add on the same branch must fail (branch already exists).
 	if err := AddWorktree(dir, filepath.Join(dir, ".claude", "worktrees", "feat2"), "feat", "main"); err == nil {

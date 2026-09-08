@@ -38,6 +38,20 @@ func TestWorktreesParse(t *testing.T) {
 	}
 }
 
+func TestMainRootReturnsFirstWorktree(t *testing.T) {
+	withGit(t, func(_ string, args []string) ([]byte, error) {
+		if strings.Join(args, " ") == "worktree list --porcelain" {
+			// Called from inside the linked worktree, git still lists main first.
+			return []byte("worktree /r/cav\nHEAD abc\nbranch refs/heads/master\n\n" +
+				"worktree /r/cav/.claude/worktrees/dp\nHEAD def\nbranch refs/heads/dp\n"), nil
+		}
+		return nil, errors.New("unexpected")
+	})
+	if got := MainRoot("/r/cav/.claude/worktrees/dp"); got != "/r/cav" {
+		t.Errorf("MainRoot from a linked worktree = %q, want the main checkout /r/cav", got)
+	}
+}
+
 func TestRepoRoot(t *testing.T) {
 	withGit(t, func(_ string, args []string) ([]byte, error) {
 		if strings.Join(args, " ") == "rev-parse --show-toplevel" {

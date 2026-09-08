@@ -21,7 +21,8 @@ var execGit = func(dir string, args ...string) ([]byte, error) {
 }
 
 // RepoRoot returns the top-level directory of the git repo containing cwd,
-// and whether cwd is in a repo at all.
+// and whether cwd is in a repo at all. Inside a linked worktree this is the
+// worktree's own root, not the main checkout — use MainRoot to group by repo.
 func RepoRoot(cwd string) (string, bool) {
 	out, err := execGit(cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -29,6 +30,24 @@ func RepoRoot(cwd string) (string, bool) {
 	}
 	root := strings.TrimSpace(string(out))
 	return root, root != ""
+}
+
+// MainRoot returns the repo's main checkout for cwd: the first entry of
+// `git worktree list`, which git always reports as the main worktree. This is
+// the same value for a session in the main checkout and for one inside any
+// linked worktree, so every worktree of a repo groups under one node. Returns
+// "" when cwd is not in a git repo.
+func MainRoot(cwd string) string {
+	out, err := execGit(cwd, "worktree", "list", "--porcelain")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			return strings.TrimPrefix(line, "worktree ")
+		}
+	}
+	return ""
 }
 
 // Worktrees lists every worktree of the repo at repoRoot (the main checkout
