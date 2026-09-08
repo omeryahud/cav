@@ -433,8 +433,10 @@ visible at a glance.
   `s` stopped-window toggle · `p` preview · `^u`/`^d` scroll preview ·
   `pgup`/`pgdn` first/last session · `^↑`/`^↓` jump 5 (macOS terminals own ⌘,
   so cmd+arrows can't reach a TUI; remap ⌘↑/⌘↓ to ESC[1;5A / ESC[1;5B in the
-  terminal to use them) · `/` filter (metadata; **live fuzzy** — type to narrow
-  (subsequence match; the dir/status grouping is kept), `↑/↓` (or `ctrl+j/k`)
+  terminal to use them) · `/` filter (metadata; **live** — type to narrow, by
+  substring across name/labels/cwd/status, plus subsequence on name/labels/dir
+  unless `list.fuzzyFilter` is off (`sessionMatches`); the dir/status grouping
+  is kept), `↑/↓` (or `ctrl+j/k`)
   move the selection without leaving the prompt, `↵` opens the selected session
   directly while `tab` just confirms the filter and stays in the list (shift+enter
   isn't detectable in bubbletea v1), and it starts empty each time — or run
@@ -487,6 +489,7 @@ visible at a glance.
   | `list.idleAfterMs` | 60000 | no keypress for this long → idle poll backoff (0 disables) |
   | `list.idleRefreshMs` | 10000 | poll interval while idle; any key wakes instantly (`zzz` shows in the header) |
   | `list.grouping` | `status-dir` | startup grouping: `dir-status`\|`status-dir`\|`recent`\|`alphabetical` (`o` cycles from there) |
+  | `list.fuzzyFilter` | `true` | `/` also matches by subsequence (fuzzy); `false` = substring only |
   | `picker.maxDepth` | 8 | how deep the dir-picker walk descends |
   | `timeouts.commandMs` | 25000 | one-shot claude invocations (create/fork/clone) |
   | `attach.tmuxScratch` | `true` | inside tmux, open sessions without suspending cav (instant ← return) |

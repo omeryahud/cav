@@ -277,6 +277,24 @@ func TestRemoveDirectoryMovesSubtreeToStopped(t *testing.T) {
 	}
 }
 
+func TestFuzzyFilterToggle(t *testing.T) {
+	m := treeModel(t, "/r/x", []claude.Worktree{{Path: "/r/x", Branch: "main"}}, "/r/x")
+	m.all[0].Name = "courses"
+	// Subsequence query: "crs" is a subsequence of "courses" but not a substring.
+	m.cfg.List.FuzzyFilter = true
+	if !m.sessionMatches(m.all[0], "crs") {
+		t.Error("with fuzzyFilter on, crs should match courses by subsequence")
+	}
+	m.cfg.List.FuzzyFilter = false
+	if m.sessionMatches(m.all[0], "crs") {
+		t.Error("with fuzzyFilter off, crs must NOT match courses")
+	}
+	// Substring still works either way.
+	if !m.sessionMatches(m.all[0], "ours") {
+		t.Error("substring should match regardless of fuzzyFilter")
+	}
+}
+
 func TestDirPaneWidth(t *testing.T) {
 	m := treeModel(t, "/r/x", nil, "/r/x")
 	m.width = 160

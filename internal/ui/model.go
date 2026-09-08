@@ -1248,12 +1248,10 @@ func (m *Model) sessionMatches(s claude.Session, q string) bool {
 		base = base[i+1:]
 	}
 	meta := strings.ToLower(s.Status + " " + s.Kind + " " + s.SessionID)
-	return strings.Contains(name, q) ||
-		strings.Contains(label, q) ||
-		strings.Contains(base, q) ||
-		strings.Contains(cwd, q) ||
-		strings.Contains(meta, q) ||
-		subseq(name, q) ||
-		subseq(label, q) ||
-		subseq(base, q)
+	if strings.Contains(name, q) || strings.Contains(label, q) ||
+		strings.Contains(base, q) || strings.Contains(cwd, q) || strings.Contains(meta, q) {
+		return true
+	}
+	// Subsequence (fuzzy) matching is opt-out via list.fuzzyFilter.
+	return m.cfg.List.FuzzyFilter && (subseq(name, q) || subseq(label, q) || subseq(base, q))
 }

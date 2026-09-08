@@ -104,6 +104,7 @@ type List struct {
 	IdleAfter      time.Duration // no keypress for this long -> idle backoff (0 disables)
 	IdleRefresh    time.Duration // poll interval while idle (any key wakes instantly)
 	Grouping       string        // startup grouping: dir-status | status-dir | recent | alphabetical
+	FuzzyFilter    bool          // / also matches by subsequence (fuzzy), not just substring
 }
 
 // Picker covers the new-session directory picker.
@@ -178,6 +179,7 @@ func Defaults() Config {
 			IdleAfter:      60 * time.Second,
 			IdleRefresh:    10 * time.Second,
 			Grouping:       "status-dir",
+			FuzzyFilter:    true,
 		},
 		Picker:   Picker{MaxDepth: 8},
 		Timeouts: Timeouts{Command: 25 * time.Second},
@@ -242,6 +244,7 @@ type listFile struct {
 	IdleAfterMs    *int    `json:"idleAfterMs"`
 	IdleRefreshMs  *int    `json:"idleRefreshMs"`
 	Grouping       *string `json:"grouping"`
+	FuzzyFilter    *bool   `json:"fuzzyFilter"`
 }
 
 type pickerFile struct {
@@ -506,6 +509,9 @@ func (l *loader) applyList(dst *List, c *listFile) {
 		l.setMs(&dst.IdleAfter, c.IdleAfterMs, "list.idleAfterMs", 5000)
 	}
 	l.setMs(&dst.IdleRefresh, c.IdleRefreshMs, "list.idleRefreshMs", 1000)
+	if c.FuzzyFilter != nil {
+		dst.FuzzyFilter = *c.FuzzyFilter
+	}
 	l.setEnum(&dst.Grouping, c.Grouping, "list.grouping",
 		[]string{"dir-status", "status-dir", "recent", "alphabetical"},
 		"(want dir-status|status-dir|recent|alphabetical)")

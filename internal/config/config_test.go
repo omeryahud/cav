@@ -150,6 +150,18 @@ func TestAttachTmuxScratch(t *testing.T) {
 	}
 }
 
+func TestFuzzyFilterKey(t *testing.T) {
+	withConfig(t, "")
+	if cfg, _ := Load(); !cfg.List.FuzzyFilter {
+		t.Error("fuzzyFilter should default on (preserves current behavior)")
+	}
+	withConfig(t, `{"list": {"fuzzyFilter": false}}`)
+	cfg, err := Load()
+	if err != nil || cfg.List.FuzzyFilter {
+		t.Errorf("fuzzyFilter false override failed: %v err=%v", cfg.List.FuzzyFilter, err)
+	}
+}
+
 func TestGroupingKey(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()
