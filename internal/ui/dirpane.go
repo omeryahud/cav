@@ -272,15 +272,22 @@ func (m *Model) sessionsUnder(cwd string) []claude.Session {
 	return out
 }
 
-// anySessionUnder reports whether any session at all (active or stopped) has a
-// cwd under path — used to refuse deleting a worktree that sessions depend on.
-func (m *Model) anySessionUnder(path string) bool {
+// sessionsUnderByState counts the sessions whose cwd is under path, split into
+// active (in the main list) and stopped (in the stopped window). Deleting a
+// worktree is refused while active sessions run in it; stopped ones only earn a
+// warning, since git's own dirty check already protects uncommitted work.
+func (m *Model) sessionsUnderByState(path string) (active, stopped int) {
 	for _, s := range m.all {
-		if under(s.CWD, path) {
-			return true
+		if !under(s.CWD, path) {
+			continue
+		}
+		if m.isStopped(s) {
+			stopped++
+		} else {
+			active++
 		}
 	}
-	return false
+	return active, stopped
 }
 
 // isWorktreePath reports whether p is a known git worktree (so an empty one

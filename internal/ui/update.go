@@ -293,8 +293,8 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "X: select a linked worktree to delete"
 			break
 		}
-		if m.anySessionUnder(n.path) {
-			m.status = "X: " + n.label + " still has sessions — remove them first (D)"
+		if active, _ := m.sessionsUnderByState(n.path); active > 0 {
+			m.status = "X: " + n.label + " still has active sessions — remove them first (D)"
 			break
 		}
 		m.pendingWT = n

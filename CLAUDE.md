@@ -195,9 +195,11 @@ visible at a glance.
   reports and does nothing.
 - **Delete worktree** (`X`): removes the selected **linked** worktree
   (`git worktree remove`, no `--force`, so git refuses a dirty one; the branch
-  is kept). Refused on the main checkout, and refused while any session (active
-  or stopped) still lives under it (`anySessionUnder`) — remove those first
-  with `D`. Confirm prompt names the worktree and branch.
+  is kept). Refused on the main checkout, and refused only while **active**
+  sessions run under it (`sessionsUnderByState`) — remove those first with `D`.
+  A worktree with no active sessions is deletable even if stopped sessions
+  linger under it (git's dirty check already guards uncommitted work); the
+  confirm then warns that those stopped sessions won't resume afterward.
 - The session area itself is unchanged: `sessionArea` renders the list, or
   list + preview when the remaining width still clears `preview.minWidth`.
 - **Grouping** (`o` cycles four `groupMode`s): **status→dir** (default; by

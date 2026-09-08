@@ -220,6 +220,28 @@ func TestXKeyGuards(t *testing.T) {
 	}
 }
 
+// A worktree with only a STOPPED session under it (none active) is still
+// deletable: stopped sessions don't block, they only warn.
+func TestXAllowsWorktreeWithOnlyStoppedSessions(t *testing.T) {
+	repo := "/r/cav"
+	dp := "/r/cav/.claude/worktrees/dp"
+	m := treeModel(t, repo, []claude.Worktree{{Path: repo, Branch: "master"}, {Path: dp, Branch: "dp"}}, repo, dp)
+	// Send dp's session to the stopped window (dismiss it: no live worker).
+	m.all[1].Status = ""
+	if err := m.dismissed.Add(m.all[1].SessionID); err != nil {
+		t.Fatal(err)
+	}
+	m.recompute()
+	if active, stopped := m.sessionsUnderByState(dp); active != 0 || stopped != 1 {
+		t.Fatalf("dp should have 0 active / 1 stopped, got %d/%d", active, stopped)
+	}
+	m.dirSel = dp
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	if m.pendingWT.path != dp || m.mode != modeConfirm {
+		t.Errorf("X should arm the confirm despite a stopped session, pendingWT=%q mode=%v", m.pendingWT.path, m.mode)
+	}
+}
+
 func TestDotKeyTargetsSelectedThenLaunchDir(t *testing.T) {
 	dot := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(".")}
 	m := treeModel(t, "/r/x", []claude.Worktree{{Path: "/r/x", Branch: "main"}}, "/r/x")

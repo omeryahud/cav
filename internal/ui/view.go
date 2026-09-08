@@ -573,8 +573,13 @@ func (m *Model) footerBlock() string {
 		if branch == "" {
 			branch = m.pendingWT.label
 		}
-		status = warnDot.Render(fmt.Sprintf("Delete worktree %s (branch %s)? (y/n — the branch is kept; git refuses if dirty)",
-			m.pendingWT.label, branch))
+		prompt := fmt.Sprintf("Delete worktree %s (branch %s)? (y/n — the branch is kept; git refuses if dirty)",
+			m.pendingWT.label, branch)
+		if _, stopped := m.sessionsUnderByState(m.pendingWT.path); stopped > 0 {
+			prompt = fmt.Sprintf("Delete worktree %s (branch %s)? %d stopped session(s) here won't resume after (y/n)",
+				m.pendingWT.label, branch, stopped)
+		}
+		status = warnDot.Render(prompt)
 	case m.mode == modeConfirm && m.pendingDir != "":
 		sessions := m.sessionsUnder(m.pendingDir)
 		busy := 0
