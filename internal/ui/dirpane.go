@@ -95,7 +95,7 @@ func (m *Model) buildDirTree() []dirNode {
 	sort.Slice(repos, func(i, j int) bool { return leafLower(repos[i]) < leafLower(repos[j]) })
 
 	for _, repo := range repos {
-		nodes = append(nodes, m.repoNodes(repo, byRepo[repo], cnt, subtree)...)
+		nodes = append(nodes, m.repoNodes(repo, byRepo[repo], subtree)...)
 	}
 
 	sort.Slice(nonGit, func(i, j int) bool { return leafLower(nonGit[i]) < leafLower(nonGit[j]) })
@@ -105,15 +105,16 @@ func (m *Model) buildDirTree() []dirNode {
 	return nodes
 }
 
-// repoNodes builds the nodes for one repo: its worktrees and the session
-// subdirectories nested under them. A repo with a single worktree collapses to
-// that worktree (no separate grouping row); with several it gets a grouping row.
-func (m *Model) repoNodes(repo string, cwds map[string]bool, cnt map[string]int, subtree func(string) int) []dirNode {
+// repoNodes builds the nodes for one repo. The main checkout is the top node
+// (labeled with the repo's name); linked worktrees and session subdirectories
+// nest under it by path. Every node path is unique — the repo and its main
+// checkout are the same row — so selection (keyed by path) is unambiguous and
+// tab can reach every worktree.
+func (m *Model) repoNodes(repo string, cwds map[string]bool, subtree func(string) int) []dirNode {
 	wts := m.worktrees[repo]
 	if len(wts) == 0 {
 		wts = []claude.Worktree{{Path: repo}}
 	}
-	// Significant node paths: every worktree, plus every session cwd.
 	sigKind := map[string]nodeKind{}
 	sigBranch := map[string]string{}
 	for _, wt := range wts {
@@ -131,7 +132,8 @@ func (m *Model) repoNodes(repo string, cwds map[string]bool, cnt map[string]int,
 	}
 	sort.Strings(paths)
 
-	// parentOf: the longest other significant path that is a strict prefix.
+	// parentOf: the longest other significant path that is a strict prefix, so a
+	// linked worktree (or a subdir) nests under the deepest node containing it.
 	parentOf := map[string]string{}
 	kids := map[string]bool{}
 	for _, p := range paths {
@@ -147,30 +149,14 @@ func (m *Model) repoNodes(repo string, cwds map[string]bool, cnt map[string]int,
 		}
 	}
 
-	single := len(wts) == 1
 	var out []dirNode
-	if !single {
-		out = append(out, dirNode{path: repo, label: dirBase(repo), kind: nodeRepo,
-			count: subtree(repo), repo: repo, parent: true})
-	}
-	baseDepth := 0
-	if !single {
-		baseDepth = 1
-	}
-
 	var emit func(path string, depth int)
 	emit = func(path string, depth int) {
-		label := dirBase(path)
 		kind := sigKind[path]
-		linked := false
-		if kind == nodeWorktree {
-			if b := sigBranch[path]; b != "" {
-				label = b
-			}
-			linked = path != repo
-		}
-		if single && path == repo {
-			label = dirBase(repo) // the collapsed repo row keeps the repo's name
+		linked := kind == nodeWorktree && path != repo
+		label := dirBase(path)
+		if linked && sigBranch[path] != "" {
+			label = sigBranch[path] // a linked worktree reads best by its branch
 		}
 		out = append(out, dirNode{path: path, label: label, depth: depth, count: subtree(path),
 			kind: kind, repo: repo, branch: sigBranch[path], linked: linked, parent: kids[path]})
@@ -185,7 +171,6 @@ func (m *Model) repoNodes(repo string, cwds map[string]bool, cnt map[string]int,
 			emit(q, depth+1)
 		}
 	}
-	// Roots: significant paths with no significant parent (the worktrees).
 	var roots []string
 	for _, p := range paths {
 		if parentOf[p] == "" {
@@ -193,13 +178,13 @@ func (m *Model) repoNodes(repo string, cwds map[string]bool, cnt map[string]int,
 		}
 	}
 	sort.Slice(roots, func(i, j int) bool {
-		if roots[i] == repo != (roots[j] == repo) {
+		if (roots[i] == repo) != (roots[j] == repo) {
 			return roots[i] == repo // the main checkout first
 		}
 		return leafLower(roots[i]) < leafLower(roots[j])
 	})
 	for _, r := range roots {
-		emit(r, baseDepth)
+		emit(r, 0)
 	}
 	return out
 }
@@ -396,8 +381,8 @@ func (m *Model) worktreeBase(n dirNode) (repo, base string, ok bool) {
 	if repo == "" {
 		return "", "", false
 	}
-	if n.kind == nodeWorktree && n.branch != "" {
-		return repo, n.branch, true
+	if n.kind == nodeWorktree && n.linked && n.branch != "" {
+		return repo, n.branch, true // a linked worktree bases on its own branch
 	}
-	return repo, claude.DefaultBranch(repo), true
+	return repo, claude.DefaultBranch(repo), true // repo root / subdir → default branch
 }

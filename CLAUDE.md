@@ -164,8 +164,11 @@ visible at a glance.
   rows. Under a repo the tree shows its **git worktrees** (from
   `git worktree list`, main plus each linked one, linked marked `⑂`) and its
   **session subdirectories** nested by path, so a session in `repo/pkg/api`
-  appears under `repo → pkg → api`. A repo with a single worktree and no
-  subdirs collapses to one row; with several worktrees it gets a grouping row.
+  appears under `repo → pkg → api`. The repo's **main checkout is the top
+  row** (labeled with the repo name); linked worktrees and subdirs nest under
+  it. Every node path is unique (the repo and its main checkout are one row),
+  so tab can reach every worktree — an earlier duplicate repo/main row keyed
+  by the same path got tab stuck.
   Empty worktrees (no session) are shown too, so `.`/`W` can target them.
   Counts are **subtree totals**. `tab`/`shift+tab` walk visible rows
   (`cycleDir`), `space` folds a node (`toggleFold`, `m.dirCollapsed`). The

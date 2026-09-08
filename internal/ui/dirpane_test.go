@@ -55,15 +55,50 @@ func TestTreeRepoWithWorktrees(t *testing.T) {
 		repo, repo, dp)
 	nodes := m.buildDirTree()
 
-	repoNode, ok := nodeAt(nodes, repo)
-	if !ok || repoNode.kind != nodeRepo || repoNode.count != 3 {
-		t.Fatalf("repo node = %+v (want kind repo, count 3); tree=%v", repoNode, labelsOf(nodes))
+	// The repo's top node is the main checkout (unique path), labeled with the
+	// repo name; the linked worktree nests under it.
+	top, ok := nodeAt(nodes, repo)
+	if !ok || top.kind != nodeWorktree || top.linked || top.label != "cav" || top.count != 3 {
+		t.Fatalf("repo top node = %+v (want main worktree 'cav' count 3); tree=%v", top, labelsOf(nodes))
 	}
-	main, _ := nodeAt(nodes, repo) // same path as repo grouping — grouping wins in lookup
-	_ = main
 	dpNode, ok := nodeAt(nodes, dp)
-	if !ok || !dpNode.linked || dpNode.branch != "dp" || dpNode.count != 1 {
-		t.Errorf("worktree node = %+v, want linked dp branch count 1", dpNode)
+	if !ok || !dpNode.linked || dpNode.branch != "dp" || dpNode.count != 1 || dpNode.depth != top.depth+1 {
+		t.Errorf("worktree node = %+v, want linked dp branch count 1 nested under the repo", dpNode)
+	}
+	// Every node path is unique, so selection can't get stuck.
+	seen := map[string]bool{}
+	for _, n := range nodes {
+		if seen[n.path] {
+			t.Errorf("duplicate node path %q — selection would get stuck", n.path)
+		}
+		seen[n.path] = true
+	}
+}
+
+func TestTabReachesLinkedWorktree(t *testing.T) {
+	repo := "/r/cav"
+	dp := "/r/cav/.claude/worktrees/dp"
+	dd := "/r/cav/.claude/worktrees/dd"
+	m := treeModel(t, repo,
+		[]claude.Worktree{{Path: repo, Branch: "master"}, {Path: dp, Branch: "dp"}, {Path: dd, Branch: "dd"}},
+		repo, dp)
+	// Tab from "all" through every visible row and confirm each linked worktree
+	// is reached (the stuck-on-repo bug never advanced past the main checkout).
+	visited := map[string]bool{}
+	for i := 0; i < 8; i++ {
+		m.cycleDir(1)
+		visited[m.dirSel] = true
+	}
+	for _, want := range []string{repo, dp, dd} {
+		if !visited[want] {
+			t.Errorf("tab never selected %q; visited=%v", want, visited)
+		}
+	}
+	// dd has no session, but as a worktree it must stay selected (not fall back).
+	m.dirSel = dd
+	m.recompute()
+	if m.dirSel != dd {
+		t.Errorf("an empty worktree should stay selectable, dirSel=%q", m.dirSel)
 	}
 }
 
