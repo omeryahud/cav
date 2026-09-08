@@ -171,7 +171,10 @@ visible at a glance.
   by the same path got tab stuck.
   Empty worktrees (no session) are shown too, so `.`/`W` can target them.
   Counts are **subtree totals**. `tab`/`shift+tab` walk visible rows
-  (`cycleDir`), `space` folds a node (`toggleFold`, `m.dirCollapsed`). The
+  (`cycleDir`); the position is remembered in `m.dirIdx` so a node briefly
+  dropping out of a refresh doesn't snap the cursor back to the top
+  (`selectedNodeIndex` falls back to the remembered row, not 0). `space` folds
+  a node (`toggleFold`, `m.dirCollapsed`). The
   right list is scoped to the selection's **subtree** (`m.dirSel`, prefix
   match `under()` in `recompute`); the title reads `N of M` and rows drop the
   `dir/` prefix. `/` and `f` narrow both panes via the shared `passesFilter`.

@@ -75,6 +75,39 @@ func TestTreeRepoWithWorktrees(t *testing.T) {
 	}
 }
 
+func TestTabDoesNotJumpToTopWhenSelectionMissing(t *testing.T) {
+	// A tree of several nodes; select one partway down, then make its path
+	// vanish from the tree (a node that dropped out of a refresh). Tab must
+	// advance from the remembered position, not snap back to the top.
+	repo := "/s/substrate"
+	a := "/s/substrate/a"
+	b := "/s/substrate/b"
+	c := "/s/substrate/c"
+	m := treeModel(t, repo, []claude.Worktree{{Path: repo, Branch: "main"}}, a, b, c)
+	// Land on b via tab, recording its index.
+	for i := 0; i < 20; i++ {
+		m.cycleDir(1)
+		if m.dirSel == b {
+			break
+		}
+	}
+	if m.dirSel != b {
+		t.Fatalf("could not reach b; dirSel=%q", m.dirSel)
+	}
+	idxAtB := m.dirIdx
+	// Now point the selection at a path that isn't in the tree.
+	m.dirSel = "/gone/missing"
+	next := m.selectedNodeIndex(m.visibleNodes())
+	if next != idxAtB {
+		t.Errorf("with the selection missing, index should stay at %d (b's row), got %d", idxAtB, next)
+	}
+	m.cycleDir(1)
+	nodes := m.visibleNodes()
+	if m.dirSel == nodes[1].path && idxAtB != 0 {
+		t.Errorf("tab snapped back to the top section instead of advancing (dirSel=%q)", m.dirSel)
+	}
+}
+
 func TestTabReachesLinkedWorktree(t *testing.T) {
 	repo := "/r/cav"
 	dp := "/r/cav/.claude/worktrees/dp"

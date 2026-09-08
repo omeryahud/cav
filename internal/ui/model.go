@@ -181,6 +181,7 @@ type Model struct {
 	wtRepo, wtBase string                       // W: repo root and base branch for the pending worktree
 	launchDir      string                       // directory cav was started from (. creates here)
 	dirSel         string                       // cwd selected in the directory pane; "" = all
+	dirIdx         int                          // remembered visible-row of the selection (survives a node briefly dropping out)
 	dirCollapsed   map[string]bool              // tree nodes folded closed in the directory pane
 	repoOf         map[string]string            // session cwd -> its git repo root ("" = not a repo)
 	worktrees      map[string][]claude.Worktree // repo root -> its git worktrees
@@ -1019,6 +1020,11 @@ func (m *Model) recompute() {
 	v, m.depth, m.ghostParent = m.applyForkTree(v)
 	m.view = v
 	m.cursor = clamp(m.cursor, 0, lastIndex(len(v)))
+	// Keep the remembered directory row in sync with the selected path, so tab
+	// continues from the right place across refreshes.
+	if m.cfg.DirPane.WidthPercent > 0 {
+		m.dirIdx = m.selectedNodeIndex(m.visibleNodes())
+	}
 }
 
 // applyForkTree reorders v so each forked child follows its parent, recording a

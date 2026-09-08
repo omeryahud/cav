@@ -223,13 +223,25 @@ func (m *Model) dirPaneWidth() int {
 	return 14
 }
 
+// selectedNodeIndex is the visible row of the current selection. It trusts the
+// remembered position (m.dirIdx) when that row still holds the selected path,
+// then falls back to a path search, and finally — when the selected path is not
+// visible at all (a node that dropped out of a refresh) — keeps the remembered
+// position clamped instead of snapping to the top. Without that last fallback,
+// tab from a momentarily-missing node jumped back to the first section.
 func (m *Model) selectedNodeIndex(nodes []dirNode) int {
+	if len(nodes) == 0 {
+		return 0
+	}
+	if m.dirIdx >= 0 && m.dirIdx < len(nodes) && nodes[m.dirIdx].path == m.dirSel {
+		return m.dirIdx
+	}
 	for i, n := range nodes {
 		if n.path == m.dirSel {
 			return i
 		}
 	}
-	return 0
+	return clamp(m.dirIdx, 0, len(nodes)-1)
 }
 
 // selectedNode returns the currently selected tree node.
@@ -239,11 +251,16 @@ func (m *Model) selectedNode() dirNode {
 }
 
 // cycleDir moves the selection by d visible rows (wrapping) and re-scopes the
-// session list.
+// session list. It records the new position so the next move continues from
+// here even if the selected path briefly disappears from the tree.
 func (m *Model) cycleDir(d int) {
 	nodes := m.visibleNodes()
+	if len(nodes) == 0 {
+		return
+	}
 	i := m.selectedNodeIndex(nodes)
 	i = ((i+d)%len(nodes) + len(nodes)) % len(nodes)
+	m.dirIdx = i
 	m.dirSel = nodes[i].path
 	m.cursor = 0
 	m.recompute()
