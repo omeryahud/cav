@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/omeryahud/cav/internal/claude"
 )
 
 // dirEntry is one row of the directory pane. path "" is the "all" row.
@@ -21,7 +23,7 @@ func (m *Model) dirEntries() []dirEntry {
 	counts := map[string]int{}
 	total := 0
 	for _, s := range m.all {
-		if m.isStopped(s) != m.stoppedView || m.hiddenPendingClone(s) {
+		if !m.passesFilter(s) {
 			continue
 		}
 		total++
@@ -126,12 +128,32 @@ func (m *Model) dirTitleCount() string {
 	return fmt.Sprintf("%d of %d", len(m.view), m.dirEntries()[0].count)
 }
 
-// hasSessionIn reports whether any session in the current window lives in cwd.
+// hasSessionIn reports whether any session that passes the current window and
+// filter lives in cwd.
 func (m *Model) hasSessionIn(cwd string) bool {
 	for _, s := range m.all {
-		if s.CWD == cwd && m.isStopped(s) == m.stoppedView {
+		if s.CWD == cwd && m.passesFilter(s) {
 			return true
 		}
 	}
 	return false
+}
+
+// passesFilter reports whether s belongs to the current window and survives
+// the active deep search and / filter. The directory pane and the session
+// list share it, so the two views always agree on what is visible.
+func (m *Model) passesFilter(s claude.Session) bool {
+	if m.isStopped(s) != m.stoppedView || m.hiddenPendingClone(s) {
+		return false
+	}
+	if m.matchIDs != nil && !m.matchIDs[s.SessionID] {
+		return false
+	}
+	q := strings.ToLower(strings.TrimSpace(m.filter))
+	return q == "" || m.sessionMatches(s, q)
+}
+
+// nameStepPlaceholder names the target directory in the required-name step.
+func nameStepPlaceholder(dir string) string {
+	return "session name (required) · in " + homeShorten(dir) + "…"
 }

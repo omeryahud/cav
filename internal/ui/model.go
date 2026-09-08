@@ -860,23 +860,13 @@ func subseq(s, q string) bool {
 
 // recompute rebuilds the visible view from the full list + active filters.
 func (m *Model) recompute() {
-	q := strings.ToLower(strings.TrimSpace(m.filter))
 	if m.dirSel != "" && !m.hasSessionIn(m.dirSel) {
-		m.dirSel = "" // the selected directory emptied out: fall back to all
+		m.dirSel = "" // nothing left in the selected directory (gone, or filtered out): back to all
 	}
 	v := make([]claude.Session, 0, len(m.all))
 	for _, s := range m.all {
-		if m.matchIDs != nil && !m.matchIDs[s.SessionID] {
+		if !m.passesFilter(s) {
 			continue
-		}
-		if q != "" && !m.sessionMatches(s, q) {
-			continue // doesn't fuzzy-match the filter
-		}
-		if m.isStopped(s) != m.stoppedView {
-			continue // main window shows active sessions; the stopped window shows stopped ones (s toggles)
-		}
-		if m.hiddenPendingClone(s) {
-			continue // a fresh clone not yet showing its "copy-…" name — hide the parent-name flash
 		}
 		if m.dirSel != "" && s.CWD != m.dirSel {
 			continue // outside the directory selected in the pane

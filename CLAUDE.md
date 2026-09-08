@@ -164,7 +164,12 @@ visible at a glance.
   to the selected directory (`m.dirSel`, matched by full cwd in `recompute`):
   the title reads `N of M`, rows drop the `dir/` prefix (`rowName`), and the
   grouped view keeps only its status headers. A selection whose sessions all
-  disappear falls back to `all`. On startup the directory cav was launched
+  disappear falls back to `all`. The `/` filter and `f` search narrow **both
+  panes**: `passesFilter` is shared by `dirEntries` and `recompute`, so the
+  pane lists only directories that still have a matching session, with
+  filtered counts, and a selected directory left with no match falls back to
+  `all`. To walk filtered directories: `/`, type, `tab` to confirm, then
+  `tab`/`shift+tab`. On startup the directory cav was launched
   from is selected if it has sessions (`focusLaunchDir`, a one-shot on the
   first refresh that sees any session; `Options.LaunchDir` comes from `main`).
   The session area itself is unchanged: `sessionArea` renders the list, or
@@ -376,8 +381,8 @@ visible at a glance.
   findable by label.
 - **Keys:** `↑/↓`/`jk` move · `g/G` top/bottom · `↵`/`→` open (resume from the
   stopped window) · `tab`/`shift+tab` select a directory in the pane (scopes
-  the list) · `n` new (highlights it) · `.` new session **in the directory cav
-  was launched from** · `a` new session **in the
+  the list) · `n` new (highlights it) · `.` new session **in the directory
+  selected in the pane** (on `all`: the launch directory) · `a` new session **in the
   highlighted session's directory** (skips the picker, straight to the name
   step) · `N` new project (new dir) · `R` rename ·
   `L` label (searchable `#tags`) · `F` fork (nests the child under the parent) ·
@@ -502,8 +507,9 @@ prompt is optional (empty = idle). The session is then created and
 - `n` (new session): fuzzy-pick an existing directory, then name, then prompt.
 - `a` (new session **here**): like `n` but the directory is the highlighted
   session's cwd, so the picker is skipped.
-- `.` (new session in the **launch directory**): like `a` but the directory
-  is where cav itself was started (`Options.LaunchDir`).
+- `.` (new session in the **selected directory**): like `a` but the directory
+  is the one selected in the pane; on `all` it is where cav itself was
+  started (`Options.LaunchDir`). The name step's placeholder names the target.
 - `N` (**new project**): type a name, cav makes `<projectRoot>/<name>`
   (`config.json`'s `projectRoot`, default `~/go/src/github.com/omeryahud`),
   then session name (prefilled with that dir's name), then prompt.

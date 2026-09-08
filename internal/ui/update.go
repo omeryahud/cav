@@ -236,13 +236,18 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		m.cycleDir(-1)
 	case ".":
-		// New session in the directory cav was started from.
-		if m.launchDir != "" {
-			m.newCWD = m.launchDir
+		// New session in the directory selected in the pane; on "all", in the
+		// directory cav was started from.
+		dir := m.dirSel
+		if dir == "" {
+			dir = m.launchDir
+		}
+		if dir != "" {
+			m.newCWD = dir
 			m.newKind = kindDir
 			m.mode = modeNewName
 			m.input.SetValue("")
-			m.input.Placeholder = "session name (required)…"
+			m.input.Placeholder = nameStepPlaceholder(dir)
 			return m, m.input.Focus()
 		}
 	case "j", "down":
@@ -337,7 +342,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.newKind = kindDir
 			m.mode = modeNewName
 			m.input.SetValue("")
-			m.input.Placeholder = "session name (required)…"
+			m.input.Placeholder = nameStepPlaceholder(s.CWD)
 			return m, m.input.Focus()
 		}
 	case "F":

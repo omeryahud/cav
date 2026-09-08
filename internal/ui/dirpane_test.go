@@ -98,12 +98,44 @@ func TestSelectedDirFallsBackToAllWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestDotKeyCreatesInLaunchDir(t *testing.T) {
-	m := dirModel(t, "/w/alpha")
+func TestDotKeyTargetsSelectedDirThenLaunchDir(t *testing.T) {
+	dot := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(".")}
+
+	m := dirModel(t, "/w/alpha", "/w/beta")
 	m.launchDir = "/launch/here"
-	m.handleListKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(".")})
-	if m.mode != modeNewName || m.newKind != kindDir || m.newCWD != "/launch/here" {
-		t.Errorf("mode=%v kind=%v cwd=%q", m.mode, m.newKind, m.newCWD)
+	m.dirSel = "/w/beta"
+	m.handleListKey(dot)
+	if m.mode != modeNewName || m.newKind != kindDir || m.newCWD != "/w/beta" {
+		t.Errorf("selected dir: mode=%v kind=%v cwd=%q", m.mode, m.newKind, m.newCWD)
+	}
+
+	m = dirModel(t, "/w/alpha")
+	m.launchDir = "/launch/here"
+	m.handleListKey(dot)
+	if m.newCWD != "/launch/here" {
+		t.Errorf("on all, . should fall back to the launch dir, got %q", m.newCWD)
+	}
+
+	m = dirModel(t, "/w/alpha")
+	m.launchDir = ""
+	m.handleListKey(dot)
+	if m.mode != modeList {
+		t.Errorf("with no selection and no launch dir, . should do nothing, mode=%v", m.mode)
+	}
+}
+
+func TestFilterNarrowsDirectoryPane(t *testing.T) {
+	m := dirModel(t, "/w/alpha", "/w/beta", "/w/beta")
+	m.filter = "bet"
+	m.recompute()
+	got := m.dirEntries()
+	if len(got) != 2 || got[0].count != 2 || got[1].path != "/w/beta" || got[1].count != 2 {
+		t.Errorf("filtered entries = %+v, want all(2) and beta(2) only", got)
+	}
+	m.dirSel = "/w/alpha" // no session in alpha matches the filter
+	m.recompute()
+	if m.dirSel != "" {
+		t.Errorf("a selected dir with no matching sessions should fall back to all, got %q", m.dirSel)
 	}
 }
 
