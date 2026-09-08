@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -102,7 +103,26 @@ func (m *Model) buildDirTree() []dirNode {
 	for _, cwd := range nonGit {
 		nodes = append(nodes, dirNode{path: cwd, label: dirBase(cwd), kind: nodePlain, count: cnt[cwd]})
 	}
+	disambiguateTopLevel(nodes)
 	return nodes
+}
+
+// disambiguateTopLevel relabels top-level rows whose leaf name collides (e.g.
+// two different repos both named "substrate") to parent/leaf, so they can be
+// told apart. Nested rows keep their short labels.
+func disambiguateTopLevel(nodes []dirNode) {
+	seen := map[string]int{}
+	for _, n := range nodes {
+		if n.depth == 0 && n.path != "" {
+			seen[n.label]++
+		}
+	}
+	for i := range nodes {
+		n := &nodes[i]
+		if n.depth == 0 && n.path != "" && seen[n.label] > 1 {
+			n.label = filepath.Base(filepath.Dir(n.path)) + "/" + dirBase(n.path)
+		}
+	}
 }
 
 // repoNodes builds the nodes for one repo. The main checkout is the top node
@@ -115,7 +135,7 @@ func (m *Model) repoNodes(repo string, cwds map[string]bool, subtree func(string
 	if len(wts) == 0 {
 		wts = []claude.Worktree{{Path: repo}}
 	}
-	sigKind := map[string]nodeKind{}
+	sigKind := map[string]nodeKind{repo: nodeWorktree} // the main checkout is always present
 	sigBranch := map[string]string{}
 	for _, wt := range wts {
 		sigKind[wt.Path] = nodeWorktree
@@ -133,20 +153,27 @@ func (m *Model) repoNodes(repo string, cwds map[string]bool, subtree func(string
 	sort.Strings(paths)
 
 	// parentOf: the longest other significant path that is a strict prefix, so a
-	// linked worktree (or a subdir) nests under the deepest node containing it.
+	// subdir (or a worktree living inside the repo) nests under it. A worktree
+	// that lives OUTSIDE the main checkout has no prefix parent — reparent it
+	// under the main checkout so every worktree of a repo nests together
+	// instead of orphaning at the top level.
 	parentOf := map[string]string{}
 	kids := map[string]bool{}
 	for _, p := range paths {
+		if p == repo {
+			continue
+		}
 		best := ""
 		for _, q := range paths {
 			if q != p && under(p, q) && len(q) > len(best) {
 				best = q
 			}
 		}
-		parentOf[p] = best
-		if best != "" {
-			kids[best] = true
+		if best == "" {
+			best = repo
 		}
+		parentOf[p] = best
+		kids[best] = true
 	}
 
 	var out []dirNode

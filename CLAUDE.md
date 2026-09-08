@@ -166,9 +166,13 @@ visible at a glance.
   **session subdirectories** nested by path, so a session in `repo/pkg/api`
   appears under `repo → pkg → api`. The repo's **main checkout is the top
   row** (labeled with the repo name); linked worktrees and subdirs nest under
-  it. Every node path is unique (the repo and its main checkout are one row),
-  so tab can reach every worktree — an earlier duplicate repo/main row keyed
-  by the same path got tab stuck.
+  it. A worktree that lives **outside** the main checkout's directory (no path
+  prefix in common) is reparented under the main checkout anyway, so every
+  worktree of a repo nests together rather than orphaning at the top level.
+  Every node path is unique (the repo and its main checkout are one row), so
+  tab reaches every worktree. Two top-level rows whose leaf names collide
+  (e.g. two different `substrate` repos) are relabeled `parent/leaf`
+  (`disambiguateTopLevel`).
   Empty worktrees (no session) are shown too, so `.`/`W` can target them.
   Counts are **subtree totals**. `tab`/`shift+tab` walk visible rows
   (`cycleDir`); the position is remembered in `m.dirIdx` so a node briefly

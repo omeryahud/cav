@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -132,6 +133,65 @@ func TestTabReachesLinkedWorktree(t *testing.T) {
 	m.recompute()
 	if m.dirSel != dd {
 		t.Errorf("an empty worktree should stay selectable, dirSel=%q", m.dirSel)
+	}
+}
+
+func TestWorktreeOutsideRepoNestsUnderMain(t *testing.T) {
+	repo := "/r/kubernetes"
+	// A worktree that lives outside the main checkout's directory tree.
+	out := "/elsewhere/kep-5963-wt"
+	m := treeModel(t, repo,
+		[]claude.Worktree{{Path: repo, Branch: "master"}, {Path: out, Branch: "kep-5963"}},
+		repo)
+	nodes := m.buildDirTree()
+	main, _ := nodeAt(nodes, repo)
+	wt, ok := nodeAt(nodes, out)
+	if !ok {
+		t.Fatalf("outside worktree missing; tree=%v", labelsOf(nodes))
+	}
+	if wt.depth != main.depth+1 || !wt.linked {
+		t.Errorf("outside worktree should nest under the main checkout, got depth %d (main %d) linked=%v",
+			wt.depth, main.depth, wt.linked)
+	}
+	// Every node path is unique and only the main is at depth 0 for this repo.
+	depth0 := 0
+	for _, n := range nodes {
+		if n.repo == repo && n.depth == 0 {
+			depth0++
+		}
+	}
+	if depth0 != 1 {
+		t.Errorf("repo should have exactly one depth-0 row, got %d", depth0)
+	}
+}
+
+func TestSameLeafReposDisambiguated(t *testing.T) {
+	m := openModel(t)
+	m.input = textinput.New()
+	m.repoOf = map[string]string{"/a/substrate": "/a/substrate", "/b/substrate": "/b/substrate"}
+	m.worktrees = map[string][]claude.Worktree{
+		"/a/substrate": {{Path: "/a/substrate", Branch: "main"}},
+		"/b/substrate": {{Path: "/b/substrate", Branch: "main"}},
+	}
+	m.all = []claude.Session{
+		{SessionID: "a", Name: "a", Kind: "background", Status: "idle", CWD: "/a/substrate"},
+		{SessionID: "b", Name: "b", Kind: "background", Status: "idle", CWD: "/b/substrate"},
+	}
+	m.recompute()
+	labels := labelsOf(m.buildDirTree())
+	var got []string
+	for _, l := range labels {
+		if strings.Contains(l, "substrate") {
+			got = append(got, l)
+		}
+	}
+	if len(got) != 2 || got[0] == got[1] {
+		t.Errorf("colliding repos should be disambiguated, got %v", got)
+	}
+	for _, l := range got {
+		if l != "a/substrate" && l != "b/substrate" {
+			t.Errorf("unexpected disambiguated label %q", l)
+		}
 	}
 }
 
