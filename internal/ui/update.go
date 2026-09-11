@@ -32,19 +32,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.worktrees = msg.worktrees
 		m.states = msg.states
 		m.live = msg.live
-		// One-shots on the first refresh that can see sessions: fold every repo's
-		// children (dirPane.startCollapsed), then select the launch directory.
-		if len(m.all) > 0 {
-			if m.collapseOnLoad {
-				m.collapseOnLoad = false
+		// First refresh: fold the tree if configured, then make sure the launch
+		// directory (selected since startup) is not hidden inside a folded repo.
+		if m.startupLayout {
+			m.startupLayout = false
+			if m.cfg.DirPane.StartCollapsed {
 				m.collapseTree()
 			}
-			if m.focusLaunchDir {
-				m.focusLaunchDir = false
-				if m.hasSessionIn(m.launchDir) {
-					m.dirSel = m.launchDir
-				}
-			}
+			m.revealPath(m.launchDir)
 		}
 		// Expire the footer status note once it has sat unchanged for a while —
 		// action notes ("moved … to the stopped window", "renamed", …) are moment

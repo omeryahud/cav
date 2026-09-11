@@ -457,14 +457,57 @@ func TestDirPaneWidth(t *testing.T) {
 	}
 }
 
-func TestLaunchDirFocusedOnFirstRefresh(t *testing.T) {
+func TestLaunchDirWithoutSessionsIsPinnedAndSelected(t *testing.T) {
 	m := treeModel(t, "/r/x", []claude.Worktree{{Path: "/r/x", Branch: "main"}}, "/r/x")
-	m.launchDir, m.focusLaunchDir = "/r/x", true
-	m.feedRefresh()
-	if m.dirSel != "/r/x" {
-		t.Errorf("launch dir with sessions should be focused, got %q", m.dirSel)
+	m.launchDir, m.dirSel = "/here/empty", "/here/empty"
+	m.recompute()
+	if m.dirSel != "/here/empty" {
+		t.Fatalf("an empty launch dir must stay selected, got %q", m.dirSel)
 	}
-	if m.focusLaunchDir {
-		t.Error("focus should be one-shot")
+	n, ok := nodeAt(m.buildDirTree(), "/here/empty")
+	if !ok || n.count != 0 || n.kind != nodePlain {
+		t.Errorf("launch dir should be a plain row with 0 sessions, got %+v ok=%v", n, ok)
+	}
+	if len(m.view) != 0 {
+		t.Errorf("the right pane should be empty, got %d rows", len(m.view))
+	}
+	m.handleListKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(".")})
+	if m.mode != modeNewName || m.newCWD != "/here/empty" {
+		t.Errorf(". should create in the launch dir, mode=%v cwd=%q", m.mode, m.newCWD)
+	}
+}
+
+func TestLaunchDirInsideRepoNestsWithZeroCount(t *testing.T) {
+	repo := "/r/x"
+	m := treeModel(t, repo, []claude.Worktree{{Path: repo, Branch: "main"}}, repo)
+	m.launchDir, m.dirSel = "/r/x/pkg/api", "/r/x/pkg/api"
+	m.repoOf["/r/x/pkg/api"] = repo
+	m.recompute()
+	nodes := m.buildDirTree()
+	top, _ := nodeAt(nodes, repo)
+	n, ok := nodeAt(nodes, "/r/x/pkg/api")
+	if !ok || n.kind != nodeSubdir || n.count != 0 || n.depth != top.depth+1 {
+		t.Errorf("launch subdir should nest under the repo with 0 sessions, got %+v ok=%v", n, ok)
+	}
+	if m.dirSel != "/r/x/pkg/api" {
+		t.Errorf("selection should survive recompute, got %q", m.dirSel)
+	}
+}
+
+func TestStartCollapsedStillRevealsLaunchDir(t *testing.T) {
+	repo := "/r/x"
+	m := treeModel(t, repo, []claude.Worktree{{Path: repo, Branch: "main"}}, repo, "/r/x/pkg/api")
+	m.launchDir, m.dirSel = "/r/x/pkg/api", "/r/x/pkg/api"
+	m.cfg.DirPane.StartCollapsed = true
+	m.startupLayout = true
+	m.feedRefresh()
+	if m.startupLayout {
+		t.Error("startup layout should be one-shot")
+	}
+	if _, ok := nodeAt(m.visibleNodes(), "/r/x/pkg/api"); !ok {
+		t.Error("the launch dir must be visible after the startup collapse")
+	}
+	if m.dirSel != "/r/x/pkg/api" {
+		t.Errorf("launch dir should stay selected, got %q", m.dirSel)
 	}
 }

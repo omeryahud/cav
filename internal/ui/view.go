@@ -275,8 +275,11 @@ func (m *Model) indicators() string {
 func (m *Model) listLines(h, width int) []string {
 	if len(m.view) == 0 {
 		empty := "  no sessions — press n to create one"
-		if m.stoppedView {
+		switch {
+		case m.stoppedView:
 			empty = "  no stopped sessions — press s to go back"
+		case m.dirSel != "":
+			empty = "  no sessions in " + homeShorten(m.dirSel) + " · press . to start one here"
 		}
 		return fit([]string{dimStyle.Render(empty)}, h)
 	}

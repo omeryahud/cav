@@ -185,8 +185,7 @@ type Model struct {
 	dirCollapsed   map[string]bool              // tree nodes folded closed in the directory pane
 	repoOf         map[string]string            // session cwd -> its git repo root ("" = not a repo)
 	worktrees      map[string][]claude.Worktree // repo root -> its git worktrees
-	focusLaunchDir bool                         // one-shot: select launchDir in the pane on the first refresh that has it
-	collapseOnLoad bool                         // one-shot: fold every repo's children on the first refresh with nodes
+	startupLayout  bool                         // one-shot on the first refresh: fold the tree if configured, then reveal the launch directory
 	selectJobID    string                       // job id of a just-created session to highlight once it appears
 	pendingClone   map[string]string            // jobId -> intended "copy-…" name; the clone stays hidden until it appears under it
 	pending        *claude.Session              // session awaiting delete confirmation
@@ -245,33 +244,33 @@ func New(opts Options) (*Model, error) {
 	claude.SetBin(cfg.ClaudeBin)
 	applyPalette(cfg.Colors)
 	return &Model{
-		cfg:            cfg,
-		err:            cfgErr,
-		filter:         opts.Filter,
-		autoOpen:       opts.Open,
-		initNewDir:     opts.NewInDir,
-		initNewName:    opts.NewName,
-		attachNew:      opts.AttachNew,
-		launchDir:      opts.LaunchDir,
-		focusLaunchDir: opts.LaunchDir != "",
-		collapseOnLoad: cfg.DirPane.StartCollapsed,
-		names:          names.Load(),
-		labels:         labels.Load(),
-		dismissed:      dismiss.Load(),
-		forks:          forks.Load(),
-		unparked:       unpark.Load(),
-		entered:        entered.Load(),
-		input:          ti,
-		mode:           modeList,
-		groupMode:      groupingFromConfig(cfg.List.Grouping),
-		groupDefault:   groupingFromConfig(cfg.List.Grouping),
-		previewOn:      cfg.Preview.StartOn,
-		prevCache:      map[string]string{},
-		prevReq:        map[string]bool{},
-		states:         map[string]string{},
-		justStopped:    map[string]bool{},
-		pendingClone:   map[string]string{},
-		seen:           seen.Load(),
+		cfg:           cfg,
+		err:           cfgErr,
+		filter:        opts.Filter,
+		autoOpen:      opts.Open,
+		initNewDir:    opts.NewInDir,
+		initNewName:   opts.NewName,
+		attachNew:     opts.AttachNew,
+		launchDir:     opts.LaunchDir,
+		dirSel:        opts.LaunchDir,
+		startupLayout: true,
+		names:         names.Load(),
+		labels:        labels.Load(),
+		dismissed:     dismiss.Load(),
+		forks:         forks.Load(),
+		unparked:      unpark.Load(),
+		entered:       entered.Load(),
+		input:         ti,
+		mode:          modeList,
+		groupMode:     groupingFromConfig(cfg.List.Grouping),
+		groupDefault:  groupingFromConfig(cfg.List.Grouping),
+		previewOn:     cfg.Preview.StartOn,
+		prevCache:     map[string]string{},
+		prevReq:       map[string]bool{},
+		states:        map[string]string{},
+		justStopped:   map[string]bool{},
+		pendingClone:  map[string]string{},
+		seen:          seen.Load(),
 	}, nil
 }
 
@@ -281,7 +280,7 @@ func New(opts Options) (*Model, error) {
 func (m *Model) Init() tea.Cmd {
 	m.refreshes = make(chan refreshResult)
 	m.act = newActivity()
-	go refreshLoop(m.refreshes, m.cfg.List, m.act)
+	go refreshLoop(m.refreshes, m.cfg.List, m.act, m.launchDir)
 	if m.initNewDir != "" {
 		return tea.Batch(waitRefresh(m.refreshes),
 			createCmd(m.initNewDir, m.initNewName, "", m.cfg.NewSession, m.cfg.Timeouts.Command))
@@ -291,7 +290,9 @@ func (m *Model) Init() tea.Cmd {
 
 // ---- commands ----
 
-func doRefresh() refreshResult {
+// doRefresh merges the session sources. launchDir is resolved to its repo along
+// with the session cwds so the pane can show it even when it has no sessions.
+func doRefresh(launchDir string) refreshResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	live, _ := claude.List(ctx) // ignore errors: still show durable on-disk jobs
@@ -359,7 +360,14 @@ func doRefresh() refreshResult {
 		seen[j.SessionID] = true
 	}
 
-	repoOf, worktrees := scanWorktrees(sessions)
+	cwds := make([]string, 0, len(sessions)+1)
+	for _, s := range sessions {
+		cwds = append(cwds, s.CWD)
+	}
+	if launchDir != "" {
+		cwds = append(cwds, launchDir)
+	}
+	repoOf, worktrees := scanWorktrees(cwds)
 	return refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet,
 		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees}
 }
@@ -374,16 +382,16 @@ var (
 	wtScanAt     time.Time
 )
 
-func scanWorktrees(sessions []claude.Session) (map[string]string, map[string][]claude.Worktree) {
+func scanWorktrees(cwds []string) (map[string]string, map[string][]claude.Worktree) {
 	repoOf := map[string]string{}
 	repos := map[string]bool{}
-	for _, s := range sessions {
-		r, ok := cwdRepoCache[s.CWD]
+	for _, cwd := range cwds {
+		r, ok := cwdRepoCache[cwd]
 		if !ok {
-			r = claude.MainRoot(s.CWD) // the repo's main checkout, so all its worktrees group together
-			cwdRepoCache[s.CWD] = r
+			r = claude.MainRoot(cwd) // the repo's main checkout, so all its worktrees group together
+			cwdRepoCache[cwd] = r
 		}
-		repoOf[s.CWD] = r
+		repoOf[cwd] = r
 		if r != "" {
 			repos[r] = true
 		}
@@ -451,10 +459,10 @@ func idleDelay(l config.List, sinceInput time.Duration) time.Duration {
 // l.IdleAfter, the loop naps l.IdleRefresh between polls — a forgotten cav
 // costs ~nothing instead of a continuous poll — and any keypress wakes it
 // instantly via act.wake.
-func refreshLoop(ch chan<- refreshResult, l config.List, act *activity) {
+func refreshLoop(ch chan<- refreshResult, l config.List, act *activity, launchDir string) {
 	for {
 		start := time.Now()
-		rr := doRefresh()
+		rr := doRefresh(launchDir)
 		if d := time.Since(start); d < l.MinRefresh {
 			time.Sleep(l.MinRefresh - d)
 		}
@@ -950,8 +958,8 @@ func subseq(s, q string) bool {
 
 // recompute rebuilds the visible view from the full list + active filters.
 func (m *Model) recompute() {
-	if m.dirSel != "" && !m.hasSessionIn(m.dirSel) && !m.isWorktreePath(m.dirSel) {
-		m.dirSel = "" // nothing left under the selection (and not an empty worktree): back to all
+	if m.dirSel != "" && !m.hasSessionIn(m.dirSel) && !m.isWorktreePath(m.dirSel) && m.dirSel != m.launchDir {
+		m.dirSel = "" // nothing left under the selection, and it is neither a worktree nor the launch dir: back to all
 	}
 	v := make([]claude.Session, 0, len(m.all))
 	for _, s := range m.all {

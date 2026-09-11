@@ -62,6 +62,11 @@ func (m *Model) buildDirTree() []dirNode {
 			cnt[s.CWD]++
 		}
 	}
+	if m.launchDir != "" {
+		if _, ok := cnt[m.launchDir]; !ok {
+			cnt[m.launchDir] = 0 // the launch directory is always a row, so . can start a session there
+		}
+	}
 	subtree := func(path string) int { // sessions in a subtree
 		n := 0
 		for cwd, c := range cnt {
@@ -314,6 +319,18 @@ func (m *Model) collapseTree() {
 	for _, n := range m.buildDirTree() {
 		if n.parent && n.path != "" {
 			m.dirCollapsed[n.path] = true
+		}
+	}
+}
+
+// revealPath expands every ancestor of path so its row is visible.
+func (m *Model) revealPath(path string) {
+	if path == "" || m.dirCollapsed == nil {
+		return
+	}
+	for _, n := range m.buildDirTree() {
+		if n.path != "" && n.path != path && under(path, n.path) {
+			delete(m.dirCollapsed, n.path)
 		}
 	}
 }

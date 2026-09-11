@@ -184,8 +184,15 @@ visible at a glance.
   `dir/` prefix. `/` and `f` narrow both panes via the shared `passesFilter`.
   A selection whose subtree empties out falls back to `all` — unless it is a
   known (possibly empty) worktree (`isWorktreePath`), which stays selectable.
-  On startup the launch directory is selected if it has sessions
-  (`focusLaunchDir`; `Options.LaunchDir` from `main`).
+  The **launch directory** (`Options.LaunchDir` from `main`) is always a row
+  and is selected from startup (`dirSel` is set in `New`): `buildDirTree` pins
+  it into the count map with 0 when it has no sessions, `doRefresh` resolves
+  its repo alongside the session cwds so it nests correctly, the empty-selection
+  fallback exempts it (like a worktree), and the empty right pane says
+  `press . to start one here`. On the first refresh a one-shot
+  (`startupLayout`) applies `dirPane.startCollapsed` and then `revealPath`
+  expands the launch directory's ancestors so it is never hidden in a folded
+  repo.
 - **Worktree discovery** runs in the background refresh (`scanWorktrees`):
   a cwd's repo is cached permanently as its **main checkout** (`MainRoot` =
   the first `git worktree list` entry), **not** `git rev-parse
