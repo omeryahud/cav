@@ -80,11 +80,16 @@ bulk of the work. Don't "simplify" back to a single source.
    list shrinks and sessions "disappear".
 
 2. **`~/.claude/jobs/<jobId>/state.json`** — *durable per-job record*, survives
-   sleep. Fields used: `sessionId, cwd, name, state, updatedAt` (RFC3339). The
-   **directory name is the job id**. `state` ∈
+   sleep. Fields used: `sessionId, cwd, worktreePath, name, state, updatedAt`
+   (RFC3339). The **directory name is the job id**. `state` ∈
    `working | done | blocked | stopped | error | ...`. ⚠️ Its `sessionId` field
    can be **stale after a `/branch`** — it holds the *original* session id, not
-   the current one.
+   the current one. ⚠️ For a session running in a git worktree, `cwd` is the
+   repo **base** and `worktreePath` is where the session actually runs — the
+   same path the live daemon reports as its cwd. `ScanJobs` uses `worktreePath`
+   as the record's `CWD` when set, so an on-disk session (after a restart, with
+   no live worker) lands under its worktree in the tree instead of the repo
+   root; without this it jumped to the worktree only once opened and made live.
 
 3. **`~/.claude/daemon/roster.json`** — `workers` keyed by **job id**, each with
    the **current** `sessionId`. This is the authoritative live

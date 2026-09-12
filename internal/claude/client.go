@@ -104,20 +104,28 @@ func ScanJobs() []JobRecord {
 			continue
 		}
 		var st struct {
-			SessionID string `json:"sessionId"`
-			CWD       string `json:"cwd"`
-			Name      string `json:"name"`
-			State     string `json:"state"`
-			UpdatedAt string `json:"updatedAt"`
+			SessionID    string `json:"sessionId"`
+			CWD          string `json:"cwd"`
+			WorktreePath string `json:"worktreePath"`
+			Name         string `json:"name"`
+			State        string `json:"state"`
+			UpdatedAt    string `json:"updatedAt"`
 		}
 		if json.Unmarshal(b, &st) != nil || st.SessionID == "" {
 			continue
+		}
+		// For a session in a git worktree, cwd is the repo base and worktreePath
+		// is where the session actually runs, matching the cwd the live daemon
+		// reports. Prefer it so an on-disk session lands under its worktree.
+		cwd := st.CWD
+		if st.WorktreePath != "" {
+			cwd = st.WorktreePath
 		}
 		ts, _ := time.Parse(time.RFC3339, st.UpdatedAt) // zero on failure → treated as recent
 		out = append(out, JobRecord{
 			JobID:     filepath.Base(filepath.Dir(p)),
 			SessionID: st.SessionID,
-			CWD:       st.CWD,
+			CWD:       cwd,
 			Name:      st.Name,
 			State:     st.State,
 			UpdatedAt: ts,
