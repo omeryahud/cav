@@ -204,7 +204,11 @@ visible at a glance.
   --show-toplevel` — inside a linked worktree that returns the worktree's own
   path, which would orphan the repo's other worktrees as stray top-level
   `⑂ main`/`⑂ master` rows. Keying by the main checkout groups every worktree
-  of a repo under one node. `git worktree list` per repo is throttled to at
+  of a repo under one node. A **resolved** cwd is cached permanently, but a cwd
+  that resolves to empty (not a repo, **or a transient git failure**) is retried
+  on the next 15s full scan, so a repo and its worktrees don't vanish for the
+  whole run when git is briefly unavailable right after a laptop restart.
+  `git worktree list` per repo is throttled to at
   most every 15s (repos new since the last scan are filled in immediately).
   All git access is in `internal/claude/git.go` (`RepoRoot`, `MainRoot`,
   `Worktrees`, `DefaultBranch`, `BranchAt`, `AddWorktree`, `RemoveWorktree`);

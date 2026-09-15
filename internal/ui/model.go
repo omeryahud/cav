@@ -372,33 +372,42 @@ func doRefresh(launchDir string) refreshResult {
 		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees}
 }
 
-// Worktree discovery is cached and throttled: a cwd's repo root never changes,
-// and `git worktree list` per repo is heavier, so it reruns at most every 15s
-// (repos new since the last scan are filled in immediately). The refresh loop
-// is single-goroutine, so these package vars need no lock.
+// Worktree discovery is cached and throttled: a resolved cwd's repo root never
+// changes, and `git worktree list` per repo is heavier, so it reruns at most
+// every 15s (repos new since the last scan are filled in immediately, and cwds
+// that came back empty are retried on the next full scan). The refresh loop is
+// single-goroutine, so these package vars need no lock. mainRootFn/worktreesFn
+// are indirections the tests replace.
 var (
 	cwdRepoCache = map[string]string{}
 	wtCache      = map[string][]claude.Worktree{}
 	wtScanAt     time.Time
+
+	mainRootFn  = claude.MainRoot
+	worktreesFn = claude.Worktrees
 )
 
 func scanWorktrees(cwds []string) (map[string]string, map[string][]claude.Worktree) {
+	full := time.Since(wtScanAt) > 15*time.Second
+	if full {
+		wtScanAt = time.Now()
+	}
 	repoOf := map[string]string{}
 	repos := map[string]bool{}
 	for _, cwd := range cwds {
 		r, ok := cwdRepoCache[cwd]
-		if !ok {
-			r = claude.MainRoot(cwd) // the repo's main checkout, so all its worktrees group together
+		// Re-resolve on a full scan when the cwd is unknown or came back empty.
+		// An empty result may be a transient git failure (right after a laptop
+		// restart git can be briefly unavailable); caching it forever would drop
+		// the repo and all its worktrees from the tree until cav is relaunched.
+		if !ok || (r == "" && full) {
+			r = mainRootFn(cwd) // the repo's main checkout, so all its worktrees group together
 			cwdRepoCache[cwd] = r
 		}
 		repoOf[cwd] = r
 		if r != "" {
 			repos[r] = true
 		}
-	}
-	full := time.Since(wtScanAt) > 15*time.Second
-	if full {
-		wtScanAt = time.Now()
 	}
 	out := map[string][]claude.Worktree{}
 	for r := range repos {
@@ -408,7 +417,7 @@ func scanWorktrees(cwds []string) (map[string]string, map[string][]claude.Worktr
 				continue
 			}
 		}
-		out[r] = claude.Worktrees(r)
+		out[r] = worktreesFn(r)
 	}
 	wtCache = out
 	return repoOf, out
