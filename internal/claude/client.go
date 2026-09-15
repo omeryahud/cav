@@ -79,12 +79,13 @@ func JobState(jobID string) string {
 
 // JobRecord is a session's durable on-disk job record (~/.claude/jobs/<jobId>/state.json).
 type JobRecord struct {
-	JobID     string
-	SessionID string
-	CWD       string
-	Name      string
-	State     string // working | done | blocked | stopped | ...
-	UpdatedAt time.Time
+	JobID        string
+	SessionID    string
+	CWD          string // the base cwd; for a worktree session this is the repo, not the worktree
+	WorktreePath string // where a worktree session actually runs; "" when not in a worktree
+	Name         string
+	State        string // working | done | blocked | stopped | ...
+	UpdatedAt    time.Time
 }
 
 // ScanJobs reads all on-disk job records. Unlike `agents --json` (which lists
@@ -114,21 +115,15 @@ func ScanJobs() []JobRecord {
 		if json.Unmarshal(b, &st) != nil || st.SessionID == "" {
 			continue
 		}
-		// For a session in a git worktree, cwd is the repo base and worktreePath
-		// is where the session actually runs, matching the cwd the live daemon
-		// reports. Prefer it so an on-disk session lands under its worktree.
-		cwd := st.CWD
-		if st.WorktreePath != "" {
-			cwd = st.WorktreePath
-		}
 		ts, _ := time.Parse(time.RFC3339, st.UpdatedAt) // zero on failure → treated as recent
 		out = append(out, JobRecord{
-			JobID:     filepath.Base(filepath.Dir(p)),
-			SessionID: st.SessionID,
-			CWD:       cwd,
-			Name:      st.Name,
-			State:     st.State,
-			UpdatedAt: ts,
+			JobID:        filepath.Base(filepath.Dir(p)),
+			SessionID:    st.SessionID,
+			CWD:          st.CWD,
+			WorktreePath: st.WorktreePath,
+			Name:         st.Name,
+			State:        st.State,
+			UpdatedAt:    ts,
 		})
 	}
 	return out

@@ -303,9 +303,15 @@ func doRefresh(launchDir string) refreshResult {
 	// only some live workers — so this fills the gaps, keeping every session with a
 	// job dir attachable instead of "not registered with the daemon".
 	jobByS := map[string]string{}
+	wtByS := map[string]string{} // sessionId -> worktree path (where a worktree session really runs)
 	for _, j := range jobRecs {
 		if _, ok := jobByS[j.SessionID]; !ok {
 			jobByS[j.SessionID] = j.JobID
+		}
+		if j.WorktreePath != "" {
+			if _, ok := wtByS[j.SessionID]; !ok {
+				wtByS[j.SessionID] = j.WorktreePath
+			}
 		}
 	}
 
@@ -360,6 +366,12 @@ func doRefresh(launchDir string) refreshResult {
 		seen[j.SessionID] = true
 	}
 
+	// A worktree session's real directory is its worktreePath. The live daemon
+	// reports it while the session runs but falls back to the repo base once the
+	// session is done, so use the on-disk worktreePath for both live and on-disk
+	// sessions, or a done worktree session would jump to the repo root.
+	applyWorktreePaths(sessions, wtByS)
+
 	cwds := make([]string, 0, len(sessions)+1)
 	for _, s := range sessions {
 		cwds = append(cwds, s.CWD)
@@ -386,6 +398,17 @@ var (
 	mainRootFn  = claude.MainRoot
 	worktreesFn = claude.Worktrees
 )
+
+// applyWorktreePaths rewrites each session's CWD to its worktree path when one
+// is known, so a worktree session nests under its worktree no matter whether
+// its cwd came from the live daemon or the on-disk record.
+func applyWorktreePaths(sessions []claude.Session, wtByS map[string]string) {
+	for i := range sessions {
+		if wp := wtByS[sessions[i].SessionID]; wp != "" {
+			sessions[i].CWD = wp
+		}
+	}
+}
 
 func scanWorktrees(cwds []string) (map[string]string, map[string][]claude.Worktree) {
 	full := time.Since(wtScanAt) > 15*time.Second
