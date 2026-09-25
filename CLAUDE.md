@@ -599,6 +599,16 @@ config.json; `""` omits the flag). Because they land in the job's respawnFlags,
 respawns keep them and forks/clones (which reuse the parent's flags) inherit
 them — cav never adds model/effort of its own on the fork/clone path.
 
+`claude --bg` refuses an untrusted workspace ("Workspace not trusted"), which a
+fresh git worktree or repo is. Trust is recorded per directory in
+`~/.claude.json` at `.projects[<dir>].hasTrustDialogAccepted`; there is no CLI
+to set it. So `Create` and `Fork` call `claude.EnsureTrusted(cwd)` first
+(`internal/claude/trust.go`): it sets that flag for the target directory, the
+same state accepting the trust dialog records. It edits only that one project
+entry, and is a no-op when the dir is already trusted or the file is missing or
+unparsable. (The plain print/non-TTY trust skip does not apply to `--bg`, and
+only git workspaces hit the gate — a plain directory does not.)
+
 ## Conventions
 
 - Keep `go vet ./...` clean and the build green before claiming done.

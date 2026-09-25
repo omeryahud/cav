@@ -195,6 +195,7 @@ func createArgs(name, prompt, model, effort string) []string {
 // It returns the new session's short job id, parsed from `claude --bg`'s
 // output, for attaching to it; the id is "" if it couldn't be parsed.
 func Create(ctx context.Context, cwd, name, prompt, model, effort string) (string, error) {
+	_ = EnsureTrusted(cwd) // a fresh worktree/repo is untrusted; claude --bg would refuse
 	cmd := exec.CommandContext(ctx, Bin(), createArgs(name, prompt, model, effort)...)
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -372,6 +373,7 @@ func Fork(ctx context.Context, parentSessionID, parentJobID, cwd, name string) (
 	if name != "" {
 		args = append(args, "--name", name)
 	}
+	_ = EnsureTrusted(cwd)
 	cmd := exec.CommandContext(ctx, Bin(), args...)
 	if cwd != "" {
 		cmd.Dir = cwd
