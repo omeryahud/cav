@@ -582,6 +582,7 @@ func (m *Model) openCurrent() tea.Cmd {
 		m.status = "can't open " + m.displayName(*s) + " — " + notAttachableReason(*s)
 		return nil
 	}
+	claude.EnsureTrustedWorkspace(s.CWD)       // waking a session in an untrusted worktree/repo is refused
 	id, label := m.jobID(s), m.displayName(*s) // attach by job id, not session id
 	note := "← back from " + label
 	// Stamp the entry time (cav-local) so the recently-entered sort can order by it.

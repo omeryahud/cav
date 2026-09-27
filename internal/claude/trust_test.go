@@ -89,4 +89,47 @@ func TestEnsureTrustedEmptyDir(t *testing.T) {
 	if err := EnsureTrusted(""); err != nil {
 		t.Errorf("empty dir should be a no-op, got %v", err)
 	}
+	if err := EnsureTrusted(); err != nil {
+		t.Errorf("no dirs should be a no-op, got %v", err)
+	}
+}
+
+func TestEnsureTrustedMultipleDirsOneWrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureTrusted("/a", "", "/b", "/a"); err != nil {
+		t.Fatal(err)
+	}
+	projects := readClaudeJSON(t, home)["projects"].(map[string]any)
+	for _, d := range []string{"/a", "/b"} {
+		e, ok := projects[d].(map[string]any)
+		if !ok || e["hasTrustDialogAccepted"] != true {
+			t.Errorf("%s not trusted: %v", d, projects[d])
+		}
+	}
+}
+
+func TestEnsureTrustedWorkspaceTrustsWorktreeAndMainCheckout(t *testing.T) {
+	orig := execGit
+	t.Cleanup(func() { execGit = orig })
+	execGit = func(dir string, args ...string) ([]byte, error) {
+		return []byte("worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n" +
+			"worktree /repo/.claude/worktrees/feat\nHEAD def\nbranch refs/heads/feat\n"), nil
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	EnsureTrustedWorkspace("/repo/.claude/worktrees/feat")
+	projects := readClaudeJSON(t, home)["projects"].(map[string]any)
+	for _, d := range []string{"/repo/.claude/worktrees/feat", "/repo"} {
+		e, ok := projects[d].(map[string]any)
+		if !ok || e["hasTrustDialogAccepted"] != true {
+			t.Errorf("%s should be trusted (worktree + main checkout), got %v", d, projects[d])
+		}
+	}
 }

@@ -6,13 +6,28 @@ import (
 	"path/filepath"
 )
 
-// EnsureTrusted marks dir as a trusted workspace in ~/.claude.json, the same
-// state accepting the trust dialog records, so `claude --bg` runs there without
-// the interactive prompt (a fresh git worktree or repo is untrusted and would
-// be refused). It is a no-op when dir is empty, already trusted, or the global
-// config is missing or unreadable, and it edits only the one project entry.
-func EnsureTrusted(dir string) error {
-	if dir == "" {
+// EnsureTrustedWorkspace trusts cwd and, when cwd is inside a git repo, the
+// repo's main checkout too. `claude --bg` checks trust on cwd (the worktree for
+// a worktree session), but waking or respawning a background session checks the
+// repo's main checkout, so both must be trusted for create and open to work.
+func EnsureTrustedWorkspace(cwd string) {
+	_ = EnsureTrusted(cwd, MainRoot(cwd))
+}
+
+// EnsureTrusted marks each directory as a trusted workspace in ~/.claude.json,
+// the same state accepting the trust dialog records, so `claude` runs there
+// without the interactive prompt (a fresh git worktree or repo is untrusted and
+// would be refused). Empty and already-trusted directories are skipped, and it
+// is a no-op when the global config is missing or unreadable. It edits only the
+// touched project entries, in a single write.
+func EnsureTrusted(dirs ...string) error {
+	want := map[string]bool{}
+	for _, d := range dirs {
+		if d != "" {
+			want[d] = true
+		}
+	}
+	if len(want) == 0 {
 		return nil
 	}
 	home, err := os.UserHomeDir()
@@ -32,15 +47,22 @@ func EnsureTrusted(dir string) error {
 	if raw, ok := top["projects"]; ok {
 		_ = json.Unmarshal(raw, &projects)
 	}
-	entry := map[string]json.RawMessage{}
-	if raw, ok := projects[dir]; ok {
-		_ = json.Unmarshal(raw, &entry)
+	changed := false
+	for dir := range want {
+		entry := map[string]json.RawMessage{}
+		if raw, ok := projects[dir]; ok {
+			_ = json.Unmarshal(raw, &entry)
+		}
+		if string(entry["hasTrustDialogAccepted"]) == "true" {
+			continue
+		}
+		entry["hasTrustDialogAccepted"] = json.RawMessage("true")
+		projects[dir] = mustJSON(entry)
+		changed = true
 	}
-	if string(entry["hasTrustDialogAccepted"]) == "true" {
+	if !changed {
 		return nil
 	}
-	entry["hasTrustDialogAccepted"] = json.RawMessage("true")
-	projects[dir] = mustJSON(entry)
 	top["projects"] = mustJSON(projects)
 	out, err := json.MarshalIndent(top, "", "  ")
 	if err != nil {
