@@ -385,19 +385,27 @@ func doRefresh(launchDir string) refreshResult {
 }
 
 // Worktree discovery is cached and throttled: a resolved cwd's repo root never
-// changes, and `git worktree list` per repo is heavier, so it reruns at most
-// every 15s (repos new since the last scan are filled in immediately, and cwds
-// that came back empty are retried on the next full scan). The refresh loop is
-// single-goroutine, so these package vars need no lock. mainRootFn/worktreesFn
-// are indirections the tests replace.
+// changes, and `git worktree list` per repo is heavier, so every repo is relisted
+// on a 15s full scan. Between full scans a repo is relisted early, at most once
+// per wtRetryAfter, when its list is empty (a new repo or a failed listing) or
+// stale (a session sits in a worktree the list lacks). A failed listing never
+// replaces a good one. Only the refresh goroutine touches these, except
+// wtForceScan, which the UI sets after W/X. mainRootFn, worktreesFn and
+// topLevelFn are indirections the tests replace.
 var (
 	cwdRepoCache = map[string]string{}
+	cwdTopCache  = map[string]string{} // cwd -> the worktree root that contains it
 	wtCache      = map[string][]claude.Worktree{}
+	wtFetchedAt  = map[string]time.Time{}
 	wtScanAt     time.Time
+	wtForceScan  atomic.Bool
 
 	mainRootFn  = claude.MainRoot
 	worktreesFn = claude.Worktrees
+	topLevelFn  = func(cwd string) string { root, _ := claude.RepoRoot(cwd); return root }
 )
+
+const wtRetryAfter = 2 * time.Second
 
 // applyWorktreePaths rewrites each session's CWD to its worktree path when one
 // is known, so a worktree session nests under its worktree no matter whether
@@ -411,12 +419,18 @@ func applyWorktreePaths(sessions []claude.Session, wtByS map[string]string) {
 }
 
 func scanWorktrees(cwds []string) (map[string]string, map[string][]claude.Worktree) {
-	full := time.Since(wtScanAt) > 15*time.Second
+	now := time.Now()
+	full := wtForceScan.Swap(false) || now.Sub(wtScanAt) > 15*time.Second
 	if full {
-		wtScanAt = time.Now()
+		wtScanAt = now
+		for cwd, top := range cwdTopCache {
+			if top == "" {
+				delete(cwdTopCache, cwd) // a failed lookup is retried after a full scan
+			}
+		}
 	}
 	repoOf := map[string]string{}
-	repos := map[string]bool{}
+	cwdsByRepo := map[string][]string{}
 	for _, cwd := range cwds {
 		r, ok := cwdRepoCache[cwd]
 		// Re-resolve on a full scan when the cwd is unknown or came back empty.
@@ -429,21 +443,79 @@ func scanWorktrees(cwds []string) (map[string]string, map[string][]claude.Worktr
 		}
 		repoOf[cwd] = r
 		if r != "" {
-			repos[r] = true
+			cwdsByRepo[r] = append(cwdsByRepo[r], cwd)
 		}
 	}
 	out := map[string][]claude.Worktree{}
-	for r := range repos {
-		if !full {
-			if cached, ok := wtCache[r]; ok {
-				out[r] = cached
-				continue
-			}
+	for r, rcwds := range cwdsByRepo {
+		cached := wtCache[r]
+		if !needsRelist(r, cached, rcwds, full, now) {
+			out[r] = cached
+			continue
 		}
-		out[r] = worktreesFn(r)
+		list := worktreesFn(r)
+		wtFetchedAt[r] = now
+		if len(list) == 0 {
+			list = cached // a failed listing never replaces a good one
+		}
+		out[r] = list
 	}
 	wtCache = out
 	return repoOf, out
+}
+
+// needsRelist reports whether repo r's worktree list must be fetched now: on a
+// full scan, or (at most once per wtRetryAfter) when the cached list is empty or
+// misses a worktree that holds one of the repo's sessions.
+func needsRelist(r string, cached []claude.Worktree, cwds []string, full bool, now time.Time) bool {
+	if full {
+		return true
+	}
+	if now.Sub(wtFetchedAt[r]) <= wtRetryAfter {
+		return false
+	}
+	return len(cached) == 0 || worktreeListStale(r, cached, cwds)
+}
+
+// worktreeListStale reports whether a session dir of repo r sits in a worktree
+// the cached list lacks. Without the early relist this triggers, a session in a
+// worktree created or briefly unlistable since the last full scan shows under
+// the main checkout until the next one.
+func worktreeListStale(r string, list []claude.Worktree, cwds []string) bool {
+	for _, cwd := range cwds {
+		if cwd == r {
+			continue
+		}
+		deepest := ""
+		for _, wt := range list {
+			if under(cwd, wt.Path) && len(wt.Path) > len(deepest) {
+				deepest = wt.Path
+			}
+		}
+		if deepest == "" {
+			return true // in this repo, but under no listed worktree
+		}
+		if deepest != r {
+			continue // inside a known linked worktree
+		}
+		// Under the main checkout only: a plain subdirectory, or a worktree
+		// the list lacks. Only git can tell them apart.
+		if top := topOf(cwd); top != "" && top != r {
+			return true
+		}
+	}
+	return false
+}
+
+// topOf is the cached worktree root containing cwd (`git rev-parse
+// --show-toplevel`).
+func topOf(cwd string) string {
+	top, ok := cwdTopCache[cwd]
+	if !ok {
+		top = topLevelFn(cwd)
+		cwdTopCache[cwd] = top
+	}
+	return top
 }
 
 // activity tracks the last user input, shared between the update loop (which

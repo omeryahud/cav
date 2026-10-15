@@ -210,8 +210,17 @@ visible at a glance.
   that resolves to empty (not a repo, **or a transient git failure**) is retried
   on the next 15s full scan, so a repo and its worktrees don't vanish for the
   whole run when git is briefly unavailable right after a laptop restart.
-  `git worktree list` per repo is throttled to at
-  most every 15s (repos new since the last scan are filled in immediately).
+  `git worktree list` per repo reruns on a 15s **full scan**, and **early**
+  (at most once per `wtRetryAfter`, 2s, per repo; `needsRelist`) when the
+  cached list is empty (a new repo, or a failed listing) or **stale**: a
+  session's dir is a worktree root (`git rev-parse --show-toplevel`, cached per
+  dir in `cwdTopCache`, failed lookups forgotten on each full scan) that the
+  list lacks (`worktreeListStale`). A failed listing never replaces a good
+  one. Without the early relist, a session in a worktree created or briefly
+  unlistable since the last full scan rendered under the **main checkout**
+  (as a plain subdir, no `⑂`) for up to 15s, intermittently at startup. The
+  `W`/`X` handlers force a full scan through the atomic `wtForceScan` flag
+  (every other scan variable belongs to the refresh goroutine alone).
   All git access is in `internal/claude/git.go` (`RepoRoot`, `MainRoot`,
   `Worktrees`, `DefaultBranch`, `BranchAt`, `AddWorktree`, `RemoveWorktree`);
   `execGit` is a package var the tests stub, with a real-git integration test

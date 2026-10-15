@@ -173,7 +173,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.worktrees[msg.repo] = kept
 		}
-		wtScanAt = time.Time{}
+		wtForceScan.Store(true)
 		if m.dirSel == msg.path {
 			m.dirSel = ""
 		}
@@ -188,7 +188,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktrees = map[string][]claude.Worktree{}
 		}
 		m.worktrees[msg.repo] = append(m.worktrees[msg.repo], claude.Worktree{Path: msg.path, Branch: msg.branch})
-		wtScanAt = time.Time{}
+		wtForceScan.Store(true)
 		m.dirSel = msg.path
 		m.status = "created worktree " + dirBase(msg.path) + " (press . to start a session)"
 		m.recompute()
