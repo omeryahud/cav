@@ -9,21 +9,22 @@ import (
 
 // resetWorktreeScan gives a test fresh worktree-scan state (it is package-global
 // and shared with the refresh loop) and restores the original afterwards.
-func resetWorktreeScan(t *testing.T) {
-	t.Helper()
-	origMain, origWt, origTop := mainRootFn, worktreesFn, topLevelFn
-	origRepo, origTop2, origWtCache := cwdRepoCache, cwdTopCache, wtCache
-	origFetched, origAt, origForce := wtFetchedAt, wtScanAt, wtForceScan.Load()
-	t.Cleanup(func() {
-		mainRootFn, worktreesFn, topLevelFn = origMain, origWt, origTop
-		cwdRepoCache, cwdTopCache, wtCache = origRepo, origTop2, origWtCache
-		wtFetchedAt, wtScanAt = origFetched, origAt
+func resetWorktreeScan(tb testing.TB) {
+	tb.Helper()
+	origMainFn, origWtFn, origTopFn := mainRootFn, worktreesFn, topLevelFn
+	origRepoCache, origTopCache, origWtCache := cwdRepoCache, cwdTopCache, wtCache
+	origFetched, origStuck, origAt, origForce := wtFetchedAt, wtStuckDirs, wtScanAt, wtForceScan.Load()
+	tb.Cleanup(func() {
+		mainRootFn, worktreesFn, topLevelFn = origMainFn, origWtFn, origTopFn
+		cwdRepoCache, cwdTopCache, wtCache = origRepoCache, origTopCache, origWtCache
+		wtFetchedAt, wtStuckDirs, wtScanAt = origFetched, origStuck, origAt
 		wtForceScan.Store(origForce)
 	})
 	cwdRepoCache = map[string]string{}
 	cwdTopCache = map[string]string{}
 	wtCache = map[string][]claude.Worktree{}
 	wtFetchedAt = map[string]time.Time{}
+	wtStuckDirs = map[string]bool{}
 	wtScanAt = time.Time{}
 	wtForceScan.Store(false)
 	topLevelFn = func(cwd string) string { return cwd }
@@ -32,13 +33,12 @@ func resetWorktreeScan(t *testing.T) {
 // pastCooldown makes the next scan of repo eligible for an early relist.
 func pastCooldown(repo string) { wtFetchedAt[repo] = time.Now().Add(-wtRetryAfter - time.Second) }
 
-func hasWorktree(list []claude.Worktree, path string) bool {
-	for _, wt := range list {
-		if wt.Path == path {
-			return true
-		}
+// scanPastCooldown runs n non-full scans, each eligible for an early relist.
+func scanPastCooldown(repo string, cwds []string, n int) {
+	for i := 0; i < n; i++ {
+		pastCooldown(repo)
+		scanWorktrees(cwds)
 	}
-	return false
 }
 
 func TestScanWorktreesRetriesEmptyAfterTransientGitFailure(t *testing.T) {
@@ -122,10 +122,33 @@ func TestScanWorktreesRelistsWhenSessionInUnlistedWorktree(t *testing.T) {
 	}
 
 	before := listCalls
-	pastCooldown(repo)
-	scanWorktrees([]string{repo, wt})
+	scanPastCooldown(repo, []string{repo, wt}, 1)
 	if listCalls != before {
 		t.Error("once the worktree is listed, refreshes should use the cache again")
+	}
+}
+
+func TestScanWorktreesDetectsWorktreeNestedInLinkedWorktree(t *testing.T) {
+	resetWorktreeScan(t)
+	repo := "/repo"
+	outer := repo + "/.claude/worktrees/outer"
+	inner := outer + "/.claude/worktrees/inner"
+	mainRootFn = func(string) string { return repo }
+	gitHasInner := false
+	worktreesFn = func(string) []claude.Worktree {
+		list := []claude.Worktree{{Path: repo}, {Path: outer}}
+		if gitHasInner {
+			list = append(list, claude.Worktree{Path: inner})
+		}
+		return list
+	}
+
+	scanWorktrees([]string{outer})
+	gitHasInner = true
+	pastCooldown(repo)
+	_, lists := scanWorktrees([]string{outer, inner})
+	if !hasWorktree(lists[repo], inner) {
+		t.Errorf("a worktree nested in a linked worktree should be picked up early, got %+v", lists[repo])
 	}
 }
 
@@ -138,10 +161,94 @@ func TestScanWorktreesPlainSubdirIsNotStale(t *testing.T) {
 	worktreesFn = func(string) []claude.Worktree { listCalls++; return []claude.Worktree{{Path: repo}} }
 
 	scanWorktrees([]string{repo, sub})
-	pastCooldown(repo)
-	scanWorktrees([]string{repo, sub})
+	scanPastCooldown(repo, []string{repo, sub}, 5)
 	if listCalls != 1 {
 		t.Errorf("a plain subdirectory must not trigger relists, got %d list calls", listCalls)
+	}
+}
+
+// cav launched through a symlink keeps the logical path, while git reports the
+// physical one. The dir's toplevel is listed, so it must not count as stale.
+func TestScanWorktreesSymlinkedDirIsNotStale(t *testing.T) {
+	resetWorktreeScan(t)
+	link, physical := "/link/repo", "/real/repo"
+	mainRootFn = func(string) string { return physical }
+	topLevelFn = func(string) string { return physical }
+	listCalls := 0
+	worktreesFn = func(string) []claude.Worktree { listCalls++; return []claude.Worktree{{Path: physical}} }
+
+	scanWorktrees([]string{link})
+	scanPastCooldown(physical, []string{link}, 10)
+	if listCalls != 1 {
+		t.Errorf("a symlinked dir must not trigger relists, got %d list calls", listCalls)
+	}
+}
+
+// A stopped session can linger in a worktree removed after cav cached its root.
+// It may cost one early relist, but must stop for good after the next full scan.
+func TestScanWorktreesRemovedWorktreeStopsRelisting(t *testing.T) {
+	resetWorktreeScan(t)
+	repo, wt := "/repo", "/repo/.claude/worktrees/gone"
+	mainRootFn = func(string) string { return repo }
+	created, removed := false, false
+	listCalls := 0
+	worktreesFn = func(string) []claude.Worktree {
+		listCalls++
+		if created && !removed {
+			return []claude.Worktree{{Path: repo}, {Path: wt}}
+		}
+		return []claude.Worktree{{Path: repo}}
+	}
+	topLevelFn = func(cwd string) string {
+		if cwd == wt && removed {
+			return "" // the dir is gone
+		}
+		return cwd
+	}
+	cwds := []string{repo, wt}
+
+	scanWorktrees([]string{repo})
+	created = true
+	scanPastCooldown(repo, cwds, 1) // picked up early; its root is now cached
+	if listCalls != 2 {
+		t.Fatalf("setup: expected an early relist, got %d list calls", listCalls)
+	}
+
+	removed = true
+	wtForceScan.Store(true)
+	scanWorktrees(cwds)
+	scanPastCooldown(repo, cwds, 10)
+	if listCalls != 4 {
+		t.Errorf("after removal: one full scan plus at most one early relist, got %d list calls", listCalls)
+	}
+
+	wtForceScan.Store(true)
+	scanWorktrees(cwds)
+	scanPastCooldown(repo, cwds, 10)
+	if listCalls != 5 {
+		t.Errorf("after the next full scan the removed worktree must stop costing relists, got %d", listCalls)
+	}
+}
+
+// A dir git calls a worktree root but never lists must cost at most one early
+// relist per full-scan window, not one every cooldown.
+func TestScanWorktreesUnplaceableDirRelistsOncePerFullScan(t *testing.T) {
+	resetWorktreeScan(t)
+	repo, odd := "/repo", "/elsewhere/odd"
+	mainRootFn = func(string) string { return repo }
+	listCalls := 0
+	worktreesFn = func(string) []claude.Worktree { listCalls++; return []claude.Worktree{{Path: repo}} }
+
+	scanWorktrees([]string{odd})
+	scanPastCooldown(repo, []string{odd}, 10)
+	if listCalls != 2 {
+		t.Errorf("expected one full scan plus one early relist, got %d list calls", listCalls)
+	}
+	wtForceScan.Store(true)
+	scanWorktrees([]string{odd})
+	scanPastCooldown(repo, []string{odd}, 10)
+	if listCalls != 4 {
+		t.Errorf("each full-scan window allows at most one early relist, got %d list calls", listCalls)
 	}
 }
 
@@ -196,24 +303,28 @@ func TestScanWorktreesRetriesFailedFirstListingAfterCooldown(t *testing.T) {
 	}
 }
 
-func TestScanWorktreesStaleRelistIsRateLimited(t *testing.T) {
+// A repo whose sessions all vanish for one refresh (say, a half-written
+// state.json) must come back with its list, not an empty one.
+func TestScanWorktreesRepoMissingOneRefreshKeepsItsList(t *testing.T) {
 	resetWorktreeScan(t)
-	repo, wt := "/repo", "/elsewhere/ghost-worktree"
-	mainRootFn = func(string) string { return repo }
+	repo, wt := "/repo", "/repo/.claude/worktrees/feat"
+	mainRootFn = func(cwd string) string {
+		if cwd == "/elsewhere" {
+			return ""
+		}
+		return repo
+	}
 	listCalls := 0
-	worktreesFn = func(string) []claude.Worktree { listCalls++; return []claude.Worktree{{Path: repo}} } // git never lists it
+	worktreesFn = func(string) []claude.Worktree { listCalls++; return []claude.Worktree{{Path: repo}, {Path: wt}} }
 
 	scanWorktrees([]string{wt})
-	for i := 0; i < 20; i++ {
-		scanWorktrees([]string{wt})
+	scanWorktrees([]string{"/elsewhere"})
+	_, lists := scanWorktrees([]string{wt}) // back within the cooldown
+	if !hasWorktree(lists[repo], wt) {
+		t.Errorf("a repo back within the cooldown must keep its list, got %+v", lists[repo])
 	}
 	if listCalls != 1 {
-		t.Errorf("relists inside the cooldown must be suppressed, got %d list calls", listCalls)
-	}
-	pastCooldown(repo)
-	scanWorktrees([]string{wt})
-	if listCalls != 2 {
-		t.Errorf("after the cooldown exactly one more relist is allowed, got %d", listCalls)
+		t.Errorf("the list should come from the cache, got %d list calls", listCalls)
 	}
 }
 
@@ -231,8 +342,7 @@ func TestScanWorktreesRetriesFailedTopLevelAfterFullScan(t *testing.T) {
 	worktreesFn = func(string) []claude.Worktree { return []claude.Worktree{{Path: repo}} }
 
 	scanWorktrees([]string{repo, wt})
-	pastCooldown(repo)
-	scanWorktrees([]string{repo, wt}) // stale check runs; the toplevel lookup fails
+	scanPastCooldown(repo, []string{repo, wt}, 1) // stale check runs; the toplevel lookup fails
 	if top, ok := cwdTopCache[wt]; !ok || top != "" {
 		t.Fatalf("setup: expected a cached failed lookup, got %q ok=%v", top, ok)
 	}
@@ -241,6 +351,51 @@ func TestScanWorktreesRetriesFailedTopLevelAfterFullScan(t *testing.T) {
 	scanWorktrees([]string{repo, wt}) // full scan forgets failed lookups
 	if _, ok := cwdTopCache[wt]; ok {
 		t.Error("a failed toplevel lookup should be forgotten on a full scan so it is retried")
+	}
+}
+
+// The UI may edit the lists it is handed (W/X do). Those edits must never reach
+// the scan's private cache.
+func TestScanWorktreesHandsOutCopies(t *testing.T) {
+	resetWorktreeScan(t)
+	repo, wt := "/repo", "/repo/.claude/worktrees/feat"
+	mainRootFn = func(string) string { return repo }
+	worktreesFn = func(string) []claude.Worktree { return []claude.Worktree{{Path: repo}, {Path: wt}} }
+
+	_, lists := scanWorktrees([]string{wt})
+	lists[repo][1].Path = "/edited"
+	delete(lists, repo)
+	if !hasWorktree(wtCache[repo], wt) {
+		t.Errorf("UI edits leaked into the scan cache: %+v", wtCache[repo])
+	}
+}
+
+// Run with -race. Mirrors the app: the refresh goroutine scans and hands each
+// result to the UI, which adopts it and runs the W/X handlers (editing its lists
+// in place) while the next scan already reads the cache. Memory shared between a
+// handed-out list and the cache is flagged as a race.
+func TestWorktreeHandlersDoNotRaceWithScan(t *testing.T) {
+	resetWorktreeScan(t)
+	repo := "/repo"
+	a, b := repo+"/.claude/worktrees/a", repo+"/.claude/worktrees/b"
+	mainRootFn = func(string) string { return repo }
+	worktreesFn = func(string) []claude.Worktree { return []claude.Worktree{{Path: repo}, {Path: a}, {Path: b}} }
+	cwds := []string{repo, a}
+	m := treeModel(t, repo, nil, repo, a)
+
+	results := make(chan refreshResult)
+	go func() {
+		defer close(results)
+		for i := 0; i < 300; i++ {
+			pastCooldown(repo)
+			repoOf, lists := scanWorktrees(cwds)
+			results <- refreshResult{repoOf: repoOf, worktrees: lists}
+		}
+	}()
+	for rr := range results {
+		m.repoOf, m.worktrees = rr.repoOf, rr.worktrees
+		m.Update(worktreeRemovedMsg{path: b, repo: repo})
+		m.Update(worktreeAddedMsg{path: b, repo: repo, branch: "b"})
 	}
 }
 

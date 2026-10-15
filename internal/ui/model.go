@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -390,13 +391,15 @@ func doRefresh(launchDir string) refreshResult {
 // per wtRetryAfter, when its list is empty (a new repo or a failed listing) or
 // stale (a session sits in a worktree the list lacks). A failed listing never
 // replaces a good one. Only the refresh goroutine touches these, except
-// wtForceScan, which the UI sets after W/X. mainRootFn, worktreesFn and
-// topLevelFn are indirections the tests replace.
+// wtForceScan, which the UI sets after W/X; the UI gets copies of the lists,
+// never the cache. mainRootFn, worktreesFn and topLevelFn are indirections the
+// tests replace.
 var (
 	cwdRepoCache = map[string]string{}
 	cwdTopCache  = map[string]string{} // cwd -> the worktree root that contains it
 	wtCache      = map[string][]claude.Worktree{}
 	wtFetchedAt  = map[string]time.Time{}
+	wtStuckDirs  = map[string]bool{} // dirs an early relist could not place; skipped until the next full scan
 	wtScanAt     time.Time
 	wtForceScan  atomic.Bool
 
@@ -423,11 +426,14 @@ func scanWorktrees(cwds []string) (map[string]string, map[string][]claude.Worktr
 	full := wtForceScan.Swap(false) || now.Sub(wtScanAt) > 15*time.Second
 	if full {
 		wtScanAt = now
+		// Look these up again: a failed lookup may have been transient, and a
+		// stuck dir's cached root may belong to a worktree removed since.
 		for cwd, top := range cwdTopCache {
-			if top == "" {
-				delete(cwdTopCache, cwd) // a failed lookup is retried after a full scan
+			if top == "" || wtStuckDirs[cwd] {
+				delete(cwdTopCache, cwd)
 			}
 		}
+		clear(wtStuckDirs)
 	}
 	repoOf := map[string]string{}
 	cwdsByRepo := map[string][]string{}
@@ -446,21 +452,23 @@ func scanWorktrees(cwds []string) (map[string]string, map[string][]claude.Worktr
 			cwdsByRepo[r] = append(cwdsByRepo[r], cwd)
 		}
 	}
-	out := map[string][]claude.Worktree{}
+	out := make(map[string][]claude.Worktree, len(cwdsByRepo))
 	for r, rcwds := range cwdsByRepo {
-		cached := wtCache[r]
-		if !needsRelist(r, cached, rcwds, full, now) {
-			out[r] = cached
-			continue
+		list := wtCache[r]
+		if needsRelist(r, list, rcwds, full, now) {
+			if fetched := worktreesFn(r); len(fetched) > 0 {
+				list = fetched // a failed listing never replaces a good one
+				wtCache[r] = fetched
+			}
+			wtFetchedAt[r] = now
+			if !full {
+				for _, cwd := range staleDirs(list, rcwds) {
+					wtStuckDirs[cwd] = true
+				}
+			}
 		}
-		list := worktreesFn(r)
-		wtFetchedAt[r] = now
-		if len(list) == 0 {
-			list = cached // a failed listing never replaces a good one
-		}
-		out[r] = list
+		out[r] = slices.Clone(list)
 	}
-	wtCache = out
 	return repoOf, out
 }
 
@@ -474,33 +482,27 @@ func needsRelist(r string, cached []claude.Worktree, cwds []string, full bool, n
 	if now.Sub(wtFetchedAt[r]) <= wtRetryAfter {
 		return false
 	}
-	return len(cached) == 0 || worktreeListStale(r, cached, cwds)
+	return len(cached) == 0 || len(staleDirs(cached, cwds)) > 0
 }
 
-// worktreeListStale reports whether a session dir of repo r sits in a worktree
-// the cached list lacks. Without the early relist this triggers, a session in a
-// worktree created or briefly unlistable since the last full scan shows under
-// the main checkout until the next one.
-func worktreeListStale(r string, list []claude.Worktree, cwds []string) bool {
+// staleDirs returns the session dirs whose worktree root, per git, is missing
+// from list. Dirs an early relist already failed to place are left out.
+func staleDirs(list []claude.Worktree, cwds []string) []string {
+	var stale []string
 	for _, cwd := range cwds {
-		if cwd == r {
+		if hasWorktree(list, cwd) || wtStuckDirs[cwd] {
 			continue
 		}
-		deepest := ""
-		for _, wt := range list {
-			if under(cwd, wt.Path) && len(wt.Path) > len(deepest) {
-				deepest = wt.Path
-			}
+		if top := topOf(cwd); top != "" && !hasWorktree(list, top) {
+			stale = append(stale, cwd)
 		}
-		if deepest == "" {
-			return true // in this repo, but under no listed worktree
-		}
-		if deepest != r {
-			continue // inside a known linked worktree
-		}
-		// Under the main checkout only: a plain subdirectory, or a worktree
-		// the list lacks. Only git can tell them apart.
-		if top := topOf(cwd); top != "" && top != r {
+	}
+	return stale
+}
+
+func hasWorktree(list []claude.Worktree, path string) bool {
+	for _, wt := range list {
+		if wt.Path == path {
 			return true
 		}
 	}

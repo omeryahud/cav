@@ -212,15 +212,22 @@ visible at a glance.
   whole run when git is briefly unavailable right after a laptop restart.
   `git worktree list` per repo reruns on a 15s **full scan**, and **early**
   (at most once per `wtRetryAfter`, 2s, per repo; `needsRelist`) when the
-  cached list is empty (a new repo, or a failed listing) or **stale**: a
-  session's dir is a worktree root (`git rev-parse --show-toplevel`, cached per
-  dir in `cwdTopCache`, failed lookups forgotten on each full scan) that the
-  list lacks (`worktreeListStale`). A failed listing never replaces a good
-  one. Without the early relist, a session in a worktree created or briefly
-  unlistable since the last full scan rendered under the **main checkout**
-  (as a plain subdir, no `⑂`) for up to 15s, intermittently at startup. The
-  `W`/`X` handlers force a full scan through the atomic `wtForceScan` flag
-  (every other scan variable belongs to the refresh goroutine alone).
+  cached list is empty (a new repo, or a failed listing) or **stale**:
+  `staleDirs` asks git for each session dir's worktree root (`git rev-parse
+  --show-toplevel`, cached in `cwdTopCache`) and flags a root the list lacks.
+  Letting git decide (no path-prefix guessing) covers worktrees nested in
+  linked worktrees, symlinked launch dirs (git reports physical paths), and
+  removed worktrees (no root). A dir an early relist still can't place is
+  parked in `wtStuckDirs` until the next full scan, which also re-asks git
+  about it, so an unplaceable dir costs at most one extra listing per 15s. A
+  failed listing never replaces a good one, and the cache keeps repos that
+  miss a refresh. Without the early relist, a session in a worktree created or
+  briefly unlistable since the last full scan rendered under the **main
+  checkout** (as a plain subdir, no `⑂`) for up to 15s, intermittently at
+  startup. **Ownership:** all scan state belongs to the refresh goroutine; the
+  UI gets **copies** of the lists (so the `W`/`X` handlers may edit them in
+  place), and the handlers request a full scan only through the atomic
+  `wtForceScan`.
   All git access is in `internal/claude/git.go` (`RepoRoot`, `MainRoot`,
   `Worktrees`, `DefaultBranch`, `BranchAt`, `AddWorktree`, `RemoveWorktree`);
   `execGit` is a package var the tests stub, with a real-git integration test
