@@ -88,8 +88,10 @@ type JobRecord struct {
 	UpdatedAt    time.Time
 	// InFlight counts background work still running: shells, subagents, monitors
 	// and scheduled wakeups. The record's "queued" count is left out, because it
-	// rests above zero on sessions that are doing nothing.
-	InFlight int
+	// rests above zero on sessions that are doing nothing. InFlightKnown is
+	// false when the record does not hold the count.
+	InFlight      int
+	InFlightKnown bool
 }
 
 // ScanJobs reads all on-disk job records. Unlike `agents --json` (which lists
@@ -133,14 +135,14 @@ func readJob(path string) (JobRecord, bool) {
 		State        string `json:"state"`
 		UpdatedAt    string `json:"updatedAt"`
 		InFlight     struct {
-			Tasks int `json:"tasks"`
+			Tasks *int `json:"tasks"`
 		} `json:"inFlight"`
 	}
 	if json.Unmarshal(b, &st) != nil {
 		return JobRecord{}, false
 	}
 	ts, _ := time.Parse(time.RFC3339, st.UpdatedAt) // zero on failure → treated as recent
-	return JobRecord{
+	rec := JobRecord{
 		JobID:        filepath.Base(filepath.Dir(path)),
 		SessionID:    st.SessionID,
 		CWD:          st.CWD,
@@ -148,8 +150,11 @@ func readJob(path string) (JobRecord, bool) {
 		Name:         st.Name,
 		State:        st.State,
 		UpdatedAt:    ts,
-		InFlight:     st.InFlight.Tasks,
-	}, true
+	}
+	if st.InFlight.Tasks != nil {
+		rec.InFlight, rec.InFlightKnown = *st.InFlight.Tasks, true
+	}
+	return rec, true
 }
 
 // bin is the claude executable, set from config at startup by SetBin.

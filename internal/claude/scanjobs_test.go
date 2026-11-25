@@ -45,12 +45,16 @@ func TestScanJobsCountsInFlightWork(t *testing.T) {
 	writeJob(t, home, "bbbb2222", `{"sessionId":"quiet","cwd":"/b","inFlight":{"tasks":0,"queued":0}}`)
 	writeJob(t, home, "cccc3333", `{"sessionId":"old-record","cwd":"/c"}`)
 
-	got := map[string]int{}
+	got := map[string]JobRecord{}
 	for _, j := range ScanJobs() {
-		got[j.SessionID] = j.InFlight
+		got[j.SessionID] = j
 	}
-	if got["busy-bg"] != 2 || got["quiet"] != 0 || got["old-record"] != 0 {
-		t.Errorf("InFlight = %v, want busy-bg 2 (tasks only), quiet 0, old-record 0", got)
+	if b, q := got["busy-bg"], got["quiet"]; b.InFlight != 2 || !b.InFlightKnown || q.InFlight != 0 || !q.InFlightKnown {
+		t.Errorf("busy-bg = %+v, quiet = %+v; want 2 (tasks only) and 0, both known", b, q)
+	}
+	// A record with no count says nothing about background work.
+	if got["old-record"].InFlightKnown {
+		t.Error("a record without inFlight must report the count as unknown")
 	}
 }
 

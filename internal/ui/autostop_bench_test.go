@@ -21,7 +21,7 @@ func benchSessions(n int, now time.Time) ([]claude.Session, claude.Roster, []cla
 			sessions[i].Status = "idle"
 		}
 		roster[sid] = jid
-		recs[i] = claude.JobRecord{JobID: jid, SessionID: sid, UpdatedAt: now.Add(-10 * time.Minute)}
+		recs[i] = claude.JobRecord{JobID: jid, SessionID: sid, UpdatedAt: now.Add(-10 * time.Minute), InFlightKnown: true}
 	}
 	return sessions, roster, recs
 }

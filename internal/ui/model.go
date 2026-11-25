@@ -103,13 +103,14 @@ type (
 		worktrees map[string][]claude.Worktree
 		workers   map[string]workerActivity // sessionId -> its live worker's activity
 		attached  map[string]bool           // job ids with a terminal attached; nil = unknown
-		at        time.Time                 // when the refresh finished
+		at        time.Time                 // when the session statuses were read
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
 		note      string
 		err       error
 		selectJob string // job id to highlight once it next appears (create/fork/clone only; step-out never moves the cursor)
+		leftJob   string // job id the user just stepped out of (starts its auto-stop window again)
 	}
 	searchDoneMsg struct {
 		q   string
@@ -172,6 +173,7 @@ type Model struct {
 	justStopped    map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
 	workers        map[string]workerActivity // sessionId -> its live worker's activity (auto-stop)
 	attached       map[string]bool           // job ids with a terminal attached; nil = unknown (auto-stop)
+	wasAttached    map[string]bool           // the attached set of the previous refresh (auto-stop)
 	lastAttached   map[string]time.Time      // job id -> when a terminal was last seen attached
 	autoStopping   map[string]time.Time      // job id -> when auto-stop issued its stop
 	lastWatch      time.Time                 // when the previous refresh was taken (auto-stop)
@@ -307,7 +309,10 @@ func (m *Model) Init() tea.Cmd {
 func doRefresh(launchDir string, watchAttached bool) refreshResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	live, _ := claude.List(ctx) // ignore errors: still show durable on-disk jobs
+	live, _ := liveSessions(ctx) // ignore errors: still show durable on-disk jobs
+	// Wall clock only: the monotonic clock stands still while the laptop sleeps,
+	// which would hide a sleep from the age and gap checks in keepWatch.
+	at := time.Now().Round(0)
 	daemon := claude.LoadRoster()
 	jobRecs := claude.ScanJobs()
 	// sessionId -> jobId from on-disk job dirs. The daemon roster is authoritative
@@ -394,15 +399,12 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 	repoOf, worktrees := scanWorktrees(cwds)
 	rr := refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet,
 		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees,
-		workers: workerActivities(sessions, roster, jobRecs)}
+		workers: workerActivities(sessions, roster, jobRecs), at: at}
 	if watchAttached {
 		if targets, ok := attachTargets(); ok {
 			rr.attached = attachedJobs(targets, sessions, roster)
 		}
 	}
-	// Wall clock only: the monotonic clock stands still while the laptop sleeps,
-	// which would hide a sleep from the age and gap checks in keepWatch.
-	rr.at = time.Now().Round(0)
 	return rr
 }
 

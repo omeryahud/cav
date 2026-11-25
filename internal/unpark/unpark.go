@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"syscall"
 	"time"
 
 	"github.com/omeryahud/cav/internal/config"
@@ -63,50 +64,77 @@ func (s *Store) read() {
 // Has reports whether id is marked (brought back to the main pane).
 func (s *Store) Has(id string) bool { return s.m[id] }
 
-// Add marks id and persists. It reads the file first, so a mark another cav
-// wrote since the last read is not lost.
-func (s *Store) Add(id string) error { s.read(); s.m[id] = true; return s.save() }
+// Add marks id and persists.
+func (s *Store) Add(id string) error {
+	return s.update(func() { s.m[id] = true })
+}
 
 // Remove unmarks id (back to the stopped window) and persists.
-func (s *Store) Remove(id string) error { s.read(); delete(s.m, id); return s.save() }
+func (s *Store) Remove(id string) error {
+	return s.update(func() { delete(s.m, id) })
+}
 
-func (s *Store) save() error {
+// update reads the file, applies change and writes it back, all under a lock
+// every cav takes, so two cavs cannot drop each other's marks.
+func (s *Store) update(change func()) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
+	defer lock(s.path + ".lock")()
+	s.read()
+	change()
+	return s.save()
+}
+
+// lock takes an exclusive lock on path and returns the function that frees it.
+// If the lock cannot be taken, the caller goes on without it: a mark lost in a
+// rare race is better than no marks at all.
+func lock(path string) (unlock func()) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return func() {}
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+	return func() { f.Close() } // closing the file frees the lock
+}
+
+func (s *Store) save() error {
 	ids := make([]string, 0, len(s.m))
 	for id := range s.m {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	b, _ := json.MarshalIndent(ids, "", "  ")
-	if err := writeAtomic(s.path, b); err != nil {
+	mtime, err := writeAtomic(s.path, b)
+	if err != nil {
 		return err
 	}
-	if fi, err := os.Stat(s.path); err == nil {
-		s.mtime = fi.ModTime()
-	}
+	s.mtime = mtime
 	return nil
 }
 
 // writeAtomic replaces path in one step, so another cav never reads a
-// half-written file.
-func writeAtomic(path string, b []byte) error {
+// half-written file. It returns the new file's modification time, taken before
+// the rename so it is this write's time and not a later writer's.
+func writeAtomic(path string, b []byte) (time.Time, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	defer os.Remove(tmp.Name()) // nothing to remove once the rename has worked
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
+	_, err = tmp.Write(b)
+	if err == nil {
+		err = tmp.Chmod(0o644)
 	}
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return err
+	fi, statErr := tmp.Stat()
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	if err == nil {
+		err = statErr
 	}
-	return os.Rename(tmp.Name(), path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return fi.ModTime(), os.Rename(tmp.Name(), path)
 }

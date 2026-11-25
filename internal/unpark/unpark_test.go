@@ -1,8 +1,10 @@
 package unpark
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -61,9 +63,40 @@ func TestWritesKeepAnotherStoresMarksWithoutAReload(t *testing.T) {
 	if onDisk.Has("s1") || !onDisk.Has("s2") {
 		t.Errorf("file should hold only s2 (b's mark kept, a's removed); s1=%v s2=%v", onDisk.Has("s1"), onDisk.Has("s2"))
 	}
-	left, _ := filepath.Glob(filepath.Join(dir, "cav", "unparked.json.*"))
-	if len(left) != 0 {
-		t.Errorf("temp files left behind: %v", left)
+	entries, _ := os.ReadDir(filepath.Join(dir, "cav"))
+	for _, e := range entries {
+		if n := e.Name(); n != "unparked.json" && n != "unparked.json.lock" {
+			t.Errorf("temp file left behind: %s", n)
+		}
+	}
+}
+
+// Two cavs that write at the same moment must both keep their marks.
+func TestConcurrentWritersLoseNothing(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const perStore = 100
+	var wg sync.WaitGroup
+	for _, prefix := range []string{"a", "b"} {
+		wg.Add(1)
+		go func(store *Store) {
+			defer wg.Done()
+			for i := 0; i < perStore; i++ {
+				if err := store.Add(fmt.Sprintf("%s%d", prefix, i)); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}(Load())
+	}
+	wg.Wait()
+
+	onDisk := Load()
+	for _, prefix := range []string{"a", "b"} {
+		for i := 0; i < perStore; i++ {
+			if id := fmt.Sprintf("%s%d", prefix, i); !onDisk.Has(id) {
+				t.Fatalf("mark %s was lost", id)
+			}
+		}
 	}
 }
 

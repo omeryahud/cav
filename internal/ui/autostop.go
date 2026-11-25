@@ -21,11 +21,15 @@ const (
 	// autoStopGapSlack is added to the idle poll interval. A longer pause
 	// between two refreshes means cav was not polling (suspended, or asleep).
 	autoStopGapSlack = 30 * time.Second
-	autoStopTimeout  = 10 * time.Second // for one `claude stop`
+	autoStopTimeout  = 10 * time.Second // for one claude call (list or stop)
 )
 
-// attachTargets is a package variable so tests can stub the process scan.
-var attachTargets = claude.AttachTargets
+// liveSessions and attachTargets are package variables so tests can stub the
+// `claude agents` call and the process scan.
+var (
+	liveSessions  = claude.List
+	attachTargets = claude.AttachTargets
+)
 
 // workerActivity is what auto-stop needs to know about a session's live worker.
 type workerActivity struct {
@@ -34,32 +38,45 @@ type workerActivity struct {
 	inFlight int       // background work still running
 }
 
+// stopTarget is a session picked for a stop, with what the refresh saw of it.
 type stopTarget struct {
 	sessionID, jobID, name string
-	updated                time.Time // the job record's last update when the target was picked
+	updated                time.Time // the job record's last update
+	startedAt              int64     // the worker's start
+	marked                 bool      // this round added the keep-here mark
 }
 
 // autoStoppedMsg reports a finished auto-stop round.
 type autoStoppedMsg struct {
 	stopped int
-	err     error // the first failure, if any
+	err     error    // the first failure, if any
+	unmark  []string // sessions left running: the mark this round added must go
 }
+
+// What the check right before a stop finds.
+const (
+	stillIdle   = iota // unchanged since the refresh: stop it
+	alreadyDown        // another cav stopped it meanwhile
+	inUse              // busy, attached, changed or unknown: leave it running
+)
 
 // idleWorker reports whether s has a running worker that is known to be idle.
 // Any other status (busy, or one cav does not know) is left alone.
 func idleWorker(s claude.Session) bool { return s.Status == "idle" }
 
 // workerActivities returns, by session id, the activity of every session that
-// has a live worker and a job record with a known update time.
+// has a live worker and a job record that tells when it was last updated and
+// how much background work it runs. A session without an entry is never
+// auto-stopped.
 func workerActivities(sessions []claude.Session, roster claude.Roster, recs []claude.JobRecord) map[string]workerActivity {
-	byJob := make(map[string]claude.JobRecord, len(recs))
-	for _, r := range recs {
-		byJob[r.JobID] = r
+	byJob := make(map[string]*claude.JobRecord, len(recs))
+	for i := range recs {
+		byJob[recs[i].JobID] = &recs[i]
 	}
 	out := map[string]workerActivity{}
 	for _, s := range sessions {
 		rec, ok := byJob[roster[s.SessionID]]
-		if !hasLiveWorker(s) || !ok || rec.UpdatedAt.IsZero() {
+		if !hasLiveWorker(s) || !ok || rec.UpdatedAt.IsZero() || !rec.InFlightKnown {
 			continue
 		}
 		last := rec.UpdatedAt
@@ -71,10 +88,13 @@ func workerActivities(sessions []claude.Session, roster claude.Roster, recs []cl
 	return out
 }
 
-// targetsJob reports whether one attach target points at a job: by its id, or
-// by part of its session's name (`claude attach` takes both).
-func targetsJob(target, jobID, name string) bool {
-	return target == jobID || (name != "" && strings.Contains(strings.ToLower(name), target))
+// targetsJob reports whether one attach target points at a job: by the start
+// of its job or session id, or by part of its session's name (`claude attach`
+// takes an id or a name). A loose match is fine: it can only keep a session
+// alive.
+func targetsJob(target, jobID, sessionID, name string) bool {
+	return strings.HasPrefix(jobID, target) || strings.HasPrefix(sessionID, target) ||
+		strings.Contains(strings.ToLower(name), target)
 }
 
 // attachedJobs returns the ids of the jobs the attach targets point at.
@@ -83,7 +103,7 @@ func attachedJobs(targets []string, sessions []claude.Session, roster claude.Ros
 	for _, s := range sessions {
 		jid := roster[s.SessionID]
 		for _, t := range targets {
-			if jid != "" && targetsJob(t, jid, s.Name) {
+			if jid != "" && targetsJob(t, jid, s.SessionID, s.Name) {
 				out[jid] = true
 			}
 		}
@@ -98,7 +118,7 @@ func attachedJobs(targets []string, sessions []claude.Session, roster claude.Ros
 func (m *Model) keepWatch(at, now time.Time) bool {
 	gap := at.Sub(m.lastWatch)
 	m.lastWatch = at
-	if m.attached == nil || now.Sub(at) > autoStopMaxAge {
+	if m.attached == nil || now.Sub(at) > autoStopMaxAge+m.cfg.List.MinRefresh {
 		m.autoStopFloor = now
 		return false
 	}
@@ -139,7 +159,8 @@ func (m *Model) autoStopTargets(at time.Time) []stopTarget {
 			continue
 		}
 		if at.Sub(m.idleSince(jid, w)) >= after {
-			out = append(out, stopTarget{sessionID: s.SessionID, jobID: jid, name: s.Name, updated: w.updated})
+			out = append(out, stopTarget{sessionID: s.SessionID, jobID: jid, name: s.Name,
+				updated: w.updated, startedAt: s.StartedAt})
 		}
 	}
 	return out
@@ -152,20 +173,29 @@ func (m *Model) autoStopIdle(at, now time.Time) tea.Cmd {
 	if m.cfg.AutoStop.After <= 0 || !m.keepWatch(at, now) {
 		return nil
 	}
-	for jid := range m.attached {
-		m.lastAttached[jid] = at
+	// A session attached now or at the previous refresh was in use until about
+	// now: an attach that just went away ended somewhere between the two.
+	for _, attached := range []map[string]bool{m.wasAttached, m.attached} {
+		for jid := range attached {
+			m.lastAttached[jid] = at
+		}
 	}
+	m.wasAttached = m.attached
 	for jid, issued := range m.autoStopping {
 		if now.Sub(issued) > autoStopRetry {
 			delete(m.autoStopping, jid)
 		}
 	}
 	targets := m.autoStopTargets(at)
-	for i, t := range targets {
-		if err := m.unparked.Add(t.sessionID); err != nil {
-			m.err = err
-			targets = targets[:i]
-			break
+	for i := range targets {
+		t := &targets[i]
+		if !m.unparked.Has(t.sessionID) {
+			if err := m.unparked.Add(t.sessionID); err != nil {
+				m.err = err
+				targets = targets[:i]
+				break
+			}
+			t.marked = true
 		}
 		m.autoStopping[t.jobID] = now
 	}
@@ -175,47 +205,79 @@ func (m *Model) autoStopIdle(at, now time.Time) tea.Cmd {
 	return autoStopCmd(targets)
 }
 
-// autoStopCmd stops each target's worker, after checking it once more.
+// autoStopCmd stops each target's worker, after checking it once more. A
+// target found in use keeps running, and the mark this round gave it is handed
+// back for removal. A failed stop keeps its mark: the stop may still land.
 func autoStopCmd(targets []stopTarget) tea.Cmd {
 	return func() tea.Msg {
 		var msg autoStoppedMsg
 		for _, t := range targets {
-			if !stillIdle(t) {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), autoStopTimeout)
-			err := claude.Stop(ctx, t.jobID)
-			cancel()
-			switch {
-			case err == nil:
-				msg.stopped++
-			case msg.err == nil:
-				msg.err = err
+			switch recheck(t) {
+			case stillIdle:
+				ctx, cancel := context.WithTimeout(context.Background(), autoStopTimeout)
+				err := claude.Stop(ctx, t.jobID)
+				cancel()
+				if err == nil {
+					msg.stopped++
+				} else if msg.err == nil {
+					msg.err = err
+				}
+			case inUse:
+				if t.marked {
+					msg.unmark = append(msg.unmark, t.sessionID)
+				}
 			}
 		}
 		return msg
 	}
 }
 
-// stillIdle checks a target again just before its stop, because the refresh
-// that picked it is a few seconds old. The job record must be unchanged since
-// then (also true when another cav already stopped it) and no terminal may be
-// attached. Anything that cannot be read counts as not idle.
-func stillIdle(t stopTarget) bool {
+// recheck looks at a target again just before its stop, because the refresh
+// that picked it is a few seconds old and a job record can lag behind a turn
+// that just started. The record must be unchanged, claude must still list the
+// same worker as idle, and no terminal may be attached. Anything that cannot be
+// read counts as in use. The attach scan runs last, so it is the freshest.
+func recheck(t stopTarget) int {
 	rec, ok := claude.ReadJob(t.jobID)
-	if !ok || rec.State == "stopped" || rec.InFlight > 0 || !rec.UpdatedAt.Equal(t.updated) {
+	switch {
+	case ok && rec.State == "stopped":
+		return alreadyDown
+	case !ok || !rec.InFlightKnown || rec.InFlight > 0 || !rec.UpdatedAt.Equal(t.updated),
+		!listedIdle(t) || attachedNow(t):
+		return inUse
+	}
+	return stillIdle
+}
+
+// listedIdle asks claude for the live sessions again and reports whether the
+// target still has the same worker and it is idle.
+func listedIdle(t stopTarget) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), autoStopTimeout)
+	defer cancel()
+	sessions, err := liveSessions(ctx)
+	if err != nil {
 		return false
 	}
-	targets, ok := attachTargets()
-	if !ok {
-		return false
-	}
-	for _, target := range targets {
-		if targetsJob(target, t.jobID, t.name) {
-			return false
+	for _, s := range sessions {
+		if s.SessionID == t.sessionID {
+			return idleWorker(s) && s.StartedAt == t.startedAt
 		}
 	}
-	return true
+	return false
+}
+
+// attachedNow scans the processes again. A failed scan counts as attached.
+func attachedNow(t stopTarget) bool {
+	targets, ok := attachTargets()
+	if !ok {
+		return true
+	}
+	for _, target := range targets {
+		if targetsJob(target, t.jobID, t.sessionID, t.name) {
+			return true
+		}
+	}
+	return false
 }
 
 // autoStopNote is the footer note for a finished round ("" when nothing to say).

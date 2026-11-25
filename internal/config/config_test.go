@@ -180,7 +180,6 @@ func TestAutoStopAfterMs(t *testing.T) {
 		t.Errorf("a too-small afterMs should be rejected and stay off: got %v err=%v", cfg.AutoStop.After, err)
 	}
 }
-
 func TestFuzzyFilterKey(t *testing.T) {
 	withConfig(t, "")
 	if cfg, _ := Load(); !cfg.List.FuzzyFilter {

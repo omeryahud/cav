@@ -77,13 +77,13 @@ func TestGroupingFromConfig(t *testing.T) {
 	}
 }
 
-// Stepping out never moves the cursor: the exit watchers report only the
-// back-note, with no selectJob. Both watchers resolve immediately against a
-// target that does not exist.
+// Stepping out never moves the cursor: the exit watchers report the back-note
+// and the job that was left (for auto-stop), with no selectJob. Both watchers
+// resolve immediately against a target that does not exist.
 func TestExitWatchersCarryNoSelectJob(t *testing.T) {
 	for name, cmd := range map[string]func() tea.Msg{
-		"pane":    watchPaneCmd("%99999", "back note"),
-		"scratch": watchScratchCmd("cav-scratch-nonexistent", "back note"),
+		"pane":    watchPaneCmd("%99999", "aaaa0001", "back note"),
+		"scratch": watchScratchCmd("cav-scratch-nonexistent", "aaaa0001", "back note"),
 	} {
 		msg, ok := cmd().(actionMsg)
 		if !ok {
@@ -91,6 +91,9 @@ func TestExitWatchersCarryNoSelectJob(t *testing.T) {
 		}
 		if msg.selectJob != "" {
 			t.Errorf("%s: selectJob = %q, want empty", name, msg.selectJob)
+		}
+		if msg.leftJob != "aaaa0001" {
+			t.Errorf("%s: leftJob = %q, want the job that was left", name, msg.leftJob)
 		}
 		if msg.note != "back note" {
 			t.Errorf("%s: note = %q", name, msg.note)

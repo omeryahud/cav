@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,12 +32,20 @@ func autoStopModel(t *testing.T, now time.Time) *Model {
 	return m
 }
 
-// stubAttachTargets replaces the process scan the stop-time check runs.
+// stubAttachTargets replaces the process scan.
 func stubAttachTargets(t *testing.T, targets []string, ok bool) {
 	t.Helper()
 	orig := attachTargets
 	attachTargets = func() ([]string, bool) { return targets, ok }
 	t.Cleanup(func() { attachTargets = orig })
+}
+
+// stubLiveSessions replaces the `claude agents` call.
+func stubLiveSessions(t *testing.T, sessions []claude.Session, err error) {
+	t.Helper()
+	orig := liveSessions
+	liveSessions = func(context.Context) ([]claude.Session, error) { return sessions, err }
+	t.Cleanup(func() { liveSessions = orig })
 }
 
 func TestAutoStopTargetsRules(t *testing.T) {
@@ -124,6 +135,31 @@ func TestAutoStopIdleGivesASteppedOutSessionAFreshWindow(t *testing.T) {
 	}
 }
 
+// An attach from another terminal is seen only by a poll. The step-out must be
+// dated at the first poll that no longer sees it, not at the last one that
+// did, or the window would be short by up to one poll interval.
+func TestAutoStopIdleDatesAStepOutAtThePollThatMissesTheAttach(t *testing.T) {
+	seen := time.Now()
+	m := autoStopModel(t, seen)
+	m.attached["aaaa0001"] = true
+	m.autoStopIdle(seen, seen)
+
+	missed := seen.Add(10 * time.Second) // the next idle poll: the attach is gone
+	m.attached = map[string]bool{}
+	m.autoStopIdle(missed, missed)
+
+	early := seen.Add(testAfter + time.Second) // a full window after the last sighting
+	m.lastWatch = early.Add(-time.Second)
+	if cmd := m.autoStopIdle(early, early); cmd != nil {
+		t.Error("the window must run from the poll that missed the attach")
+	}
+	due := missed.Add(testAfter)
+	m.lastWatch = due.Add(-time.Second)
+	if cmd := m.autoStopIdle(due, due); cmd == nil {
+		t.Error("the session should be stopped a full window after that poll")
+	}
+}
+
 // A refresh that waited while the UI was blocked (a full-screen attach) shows
 // the world as it was before. Nothing may be stopped from it, and the idle
 // window starts again when the UI is back.
@@ -160,6 +196,7 @@ func TestKeepWatchRestartsTheWindowAfterAGap(t *testing.T) {
 		{"an idle poll interval is not a gap", func(m *Model) { m.lastWatch = now.Add(-m.cfg.List.IdleRefresh - time.Second) }, now, true, now.Add(-time.Hour)},
 		{"a suspended cav or a sleep is a gap", func(m *Model) { m.lastWatch = now.Add(-time.Hour) }, now, true, now},
 		{"a stale refresh", func(*Model) {}, now.Add(-time.Minute), false, now},
+		{"a slow poll floor is not staleness", func(m *Model) { m.cfg.List.MinRefresh = 6 * time.Second }, now.Add(-7 * time.Second), true, now.Add(-time.Hour)},
 		{"a failed process scan", func(m *Model) { m.attached = nil }, now, false, now},
 	} {
 		m := autoStopModel(t, now)
@@ -213,8 +250,45 @@ func TestOpeningASessionCountsAsActivity(t *testing.T) {
 	if cmd := m.openCurrent(); cmd == nil {
 		t.Fatal("setup: the session should open")
 	}
-	if got := len(m.autoStopTargets(time.Now())); got != 0 {
+	// A refresh time has no monotonic reading, the open stamp has one.
+	if got := len(m.autoStopTargets(time.Now().Round(0))); got != 0 {
 		t.Errorf("targets right after opening = %d, want 0", got)
+	}
+}
+
+// Every way out of a session (the attach ending, a tmux popup, pane or scratch
+// closing) reports the job that was left, and that starts its window again.
+func TestSteppingOutStartsAFreshWindow(t *testing.T) {
+	now := time.Now()
+	m := autoStopModel(t, now)
+	if got := len(m.autoStopTargets(now)); got != 1 {
+		t.Fatalf("setup: targets before stepping out = %d, want 1", got)
+	}
+
+	m.Update(actionMsg{note: "← back", leftJob: "aaaa0001"})
+	if got := len(m.autoStopTargets(time.Now().Round(0))); got != 0 {
+		t.Errorf("targets right after stepping out = %d, want 0", got)
+	}
+}
+
+func TestTargetsJob(t *testing.T) {
+	const jobID, sessionID, name = "72cdfc0f", "cc12801d-1111-2222-3333-444455556666", "Hermes-Agent"
+	for target, want := range map[string]bool{
+		"72cdfc0f":      true,  // the job id
+		"72cd":          true,  // the start of it
+		"cc12801d":      true,  // the start of the session id
+		"hermes-agent":  true,  // the name, in lower case
+		"mes-ag":        true,  // part of the name
+		"12801d":        false, // the middle of an id is not a match
+		"hermes-agents": false,
+		"other":         false,
+	} {
+		if got := targetsJob(target, jobID, sessionID, name); got != want {
+			t.Errorf("targetsJob(%q) = %v, want %v", target, got, want)
+		}
+	}
+	if targetsJob("anything", "", "", "") {
+		t.Error("a session with no ids and no name matches nothing")
 	}
 }
 
@@ -227,13 +301,15 @@ func TestWorkerActivities(t *testing.T) {
 		{SessionID: "noworker", StartedAt: woke.UnixMilli()},
 		{SessionID: "norecord", Status: "idle"},
 		{SessionID: "nodate", Status: "idle"},
+		{SessionID: "nocount", Status: "idle"},
 	}
-	roster := claude.Roster{"idle": "j1", "woken": "j2", "noworker": "j3", "norecord": "j4", "nodate": "j5"}
+	roster := claude.Roster{"idle": "j1", "woken": "j2", "noworker": "j3", "norecord": "j4", "nodate": "j5", "nocount": "j6"}
 	recs := []claude.JobRecord{
-		{JobID: "j1", UpdatedAt: updated, InFlight: 2},
-		{JobID: "j2", UpdatedAt: updated},
-		{JobID: "j3", UpdatedAt: updated},
-		{JobID: "j5"},
+		{JobID: "j1", UpdatedAt: updated, InFlight: 2, InFlightKnown: true},
+		{JobID: "j2", UpdatedAt: updated, InFlightKnown: true},
+		{JobID: "j3", UpdatedAt: updated, InFlightKnown: true},
+		{JobID: "j5", InFlightKnown: true},
+		{JobID: "j6", UpdatedAt: updated}, // no in-flight count in the record
 	}
 	got := workerActivities(sessions, roster, recs)
 
@@ -243,7 +319,7 @@ func TestWorkerActivities(t *testing.T) {
 	if w := got["woken"]; !w.last.Equal(woke) || !w.updated.Equal(updated) {
 		t.Errorf("woken = %+v, want last = the later worker start %v and updated = the record's %v", w, woke, updated)
 	}
-	for _, sid := range []string{"noworker", "norecord", "nodate"} {
+	for _, sid := range []string{"noworker", "norecord", "nodate", "nocount"} {
 		if _, ok := got[sid]; ok {
 			t.Errorf("%s must have no activity entry, so it is never auto-stopped", sid)
 		}
@@ -269,6 +345,7 @@ func TestAttachedJobs(t *testing.T) {
 		{[]string{"bbbb0002"}, []string{"bbbb0002"}},
 		{[]string{"hermes"}, []string{"aaaa0001"}},
 		{[]string{"hermes-agent", "cccc0003"}, []string{"aaaa0001", "cccc0003"}},
+		{[]string{"aaaa", "s2"}, []string{"aaaa0001", "bbbb0002"}},
 		{[]string{"no-job", "unknown-name", "dddd0004"}, nil},
 	} {
 		got := attachedJobs(tc.targets, sessions, roster)
@@ -330,56 +407,187 @@ func writeJobState(t *testing.T, home, jobID, body string) {
 }
 
 // Each target is checked again right before its stop. Only a job that is still
-// exactly as the refresh saw it, with no terminal attached, is stopped.
+// exactly as the refresh saw it (same record, same idle worker, no terminal
+// attached) is stopped. A target left running hands back the mark it was given.
 func TestAutoStopCmdChecksEachTargetAgain(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	seen := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	const same, moved = `"updatedAt":"2026-01-01T12:00:00Z"`, `"updatedAt":"2026-01-01T12:00:09Z"`
-	for jobID, body := range map[string]string{
-		"aaaa0001": `{"state":"working",` + same + `}`,
-		"bbbb0001": `{"state":"blocked",` + same + `}`,
-		"bad00000": `{"state":"working",` + same + `}`,
-		"done0000": `{"state":"stopped",` + same + `}`,
-		"act00000": `{"state":"working",` + moved + `}`,
-		"task0000": `{"state":"working",` + same + `,"inFlight":{"tasks":1}}`,
-		"att00000": `{"state":"working",` + same + `}`,
-		"name0000": `{"state":"working",` + same + `}`,
-		"half0000": `{"state":"work`,
-	} {
-		writeJobState(t, home, jobID, body)
+	const (
+		at      = `"updatedAt":"2026-01-01T12:00:00Z"`
+		quiet   = `"inFlight":{"tasks":0}`
+		same    = `{"state":"working",` + at + `,` + quiet + `}`
+		started = int64(1700000000000)
+	)
+	cases := []struct {
+		job, record string
+		status      string // what claude lists at stop time; "" = not listed
+		startedAt   int64
+		want        string // stop | fail | down | keep (left running, mark handed back)
+	}{
+		{"aaaa0001", same, "idle", started, "stop"},
+		{"wait0000", `{"state":"blocked",` + at + `,` + quiet + `}`, "idle", started, "stop"},
+		{"bad00000", same, "idle", started, "fail"},
+		{"done0000", `{"state":"stopped",` + at + `,` + quiet + `}`, "", 0, "down"},
+		{"act00000", `{"state":"working","updatedAt":"2026-01-01T12:00:09Z",` + quiet + `}`, "idle", started, "keep"},
+		{"task0000", `{"state":"working",` + at + `,"inFlight":{"tasks":1}}`, "idle", started, "keep"},
+		{"noin0000", `{"state":"working",` + at + `}`, "idle", started, "keep"},
+		{"half0000", `{"state":"work`, "idle", started, "keep"},
+		{"gone0000", "", "idle", started, "keep"},
+		{"busy0000", same, "busy", started, "keep"},
+		{"resp0000", same, "idle", started + 1, "keep"},
+		{"unl00000", same, "", 0, "keep"},
+		{"att00000", same, "idle", started, "keep"},
+		{"name0000", same, "idle", started, "keep"},
 	}
+	var (
+		targets  []stopTarget
+		listed   []claude.Session
+		wantKept []string
+		wantLog  []string
+	)
+	for _, c := range cases {
+		sid := c.job + "-sid"
+		if c.record != "" {
+			writeJobState(t, home, c.job, c.record)
+		}
+		if c.status != "" {
+			listed = append(listed, claude.Session{SessionID: sid, Status: c.status, StartedAt: c.startedAt})
+		}
+		targets = append(targets, stopTarget{sessionID: sid, jobID: c.job, updated: seen, startedAt: started, marked: true})
+		switch c.want {
+		case "keep":
+			wantKept = append(wantKept, sid)
+		case "stop", "fail":
+			wantLog = append(wantLog, "stop "+c.job)
+		}
+	}
+	targets[len(targets)-1].name = "Hermes-Agent"
+	stubLiveSessions(t, listed, nil)
 	stubAttachTargets(t, []string{"att00000", "hermes"}, true)
 	log := fakeClaude(t)
 
-	var targets []stopTarget
-	for _, id := range []string{"aaaa0001", "done0000", "act00000", "task0000", "att00000", "half0000", "gone0000", "bad00000", "bbbb0001"} {
-		targets = append(targets, stopTarget{jobID: id, updated: seen})
-	}
-	targets = append(targets, stopTarget{jobID: "name0000", name: "Hermes-Agent", updated: seen})
 	msg := autoStopCmd(targets)().(autoStoppedMsg)
 
 	if msg.stopped != 2 || msg.err == nil {
-		t.Errorf("msg = %+v, want 2 stopped and the failure reported", msg)
+		t.Errorf("stopped = %d err = %v, want 2 stopped and the failed stop reported", msg.stopped, msg.err)
 	}
 	calls, _ := os.ReadFile(log)
-	if got := strings.TrimSpace(string(calls)); got != "stop aaaa0001\nstop bad00000\nstop bbbb0001" {
-		t.Errorf("claude calls = %q, want only the three unchanged, unattached jobs", got)
+	if got := strings.TrimSpace(string(calls)); got != strings.Join(wantLog, "\n") {
+		t.Errorf("claude calls = %q, want %q", got, wantLog)
+	}
+	if !slices.Equal(msg.unmark, wantKept) {
+		t.Errorf("unmark = %v, want every target left running: %v", msg.unmark, wantKept)
 	}
 }
 
-func TestAutoStopCmdStopsNothingWhenTheProcessScanFails(t *testing.T) {
+// A mark that was there before the round is not handed back.
+func TestAutoStopCmdKeepsAMarkItDidNotAdd(t *testing.T) {
+	stubLiveSessions(t, nil, nil)
+	stubAttachTargets(t, nil, true)
+	t.Setenv("HOME", t.TempDir())
+
+	msg := autoStopCmd([]stopTarget{{sessionID: "a-sid", jobID: "aaaa0001"}})().(autoStoppedMsg)
+	if len(msg.unmark) != 0 {
+		t.Errorf("unmark = %v, want none", msg.unmark)
+	}
+}
+
+func TestAutoStopCmdStopsNothingWhenItCannotTell(t *testing.T) {
+	seen := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	idle := []claude.Session{{SessionID: "a-sid", Status: "idle"}}
+	for _, tc := range []struct {
+		name    string
+		listErr error
+		scanOK  bool
+	}{
+		{"the process scan fails", nil, false},
+		{"claude cannot list the sessions", errors.New("daemon down"), true},
+	} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		writeJobState(t, home, "aaaa0001", `{"state":"working","updatedAt":"2026-01-01T12:00:00Z","inFlight":{"tasks":0}}`)
+		stubLiveSessions(t, idle, tc.listErr)
+		stubAttachTargets(t, nil, tc.scanOK)
+		log := fakeClaude(t)
+
+		target := stopTarget{sessionID: "a-sid", jobID: "aaaa0001", updated: seen}
+		msg := autoStopCmd([]stopTarget{target})().(autoStoppedMsg)
+
+		if _, err := os.Stat(log); err == nil || msg.stopped != 0 {
+			t.Errorf("%s: msg = %+v, nothing may be stopped", tc.name, msg)
+		}
+	}
+}
+
+// A target found in use at stop time loses the mark the round gave it, so a
+// running session is not left marked. A mark from before the round stays.
+func TestAutoStopRollsBackOnlyTheMarkItAdded(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		now := time.Now()
+		m := autoStopModel(t, now)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		writeJobState(t, home, "aaaa0001", `{"state":"working","inFlight":{"tasks":0}}`)
+		stubLiveSessions(t, []claude.Session{{SessionID: "a-sid", Status: "busy"}}, nil) // a turn just started
+		stubAttachTargets(t, nil, true)
+		if marked {
+			if err := m.unparked.Add("a-sid"); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		cmd := m.autoStopIdle(now, now)
+		if cmd == nil || !m.unparked.Has("a-sid") {
+			t.Fatalf("marked before = %v: setup: the round should mark and issue a stop", marked)
+		}
+		msg := cmd().(autoStoppedMsg)
+		m.Update(msg)
+
+		if msg.stopped != 0 || m.unparked.Has("a-sid") != marked {
+			t.Errorf("marked before = %v: stopped = %d, mark after = %v", marked, msg.stopped, m.unparked.Has("a-sid"))
+		}
+	}
+}
+
+// doRefresh feeds auto-stop: the time must be wall clock only (a monotonic
+// reading would hide a laptop sleep), and the attached set must be nil when
+// the scan fails or is not wanted, never an empty set.
+func TestDoRefreshStampsTheTimeAndTheAttachedSet(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	writeJobState(t, home, "aaaa0001", `{"state":"working","updatedAt":"2026-01-01T12:00:00Z"}`)
-	stubAttachTargets(t, nil, false)
-	log := fakeClaude(t)
+	writeJobState(t, home, "aaaa0001", `{"sessionId":"a-sid","state":"working","updatedAt":"2026-01-01T12:00:00Z","inFlight":{"tasks":0}}`)
+	stubLiveSessions(t, []claude.Session{{SessionID: "a-sid", Kind: "background", Name: "hermes", Status: "idle"}}, nil)
 
-	target := stopTarget{jobID: "aaaa0001", updated: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
-	msg := autoStopCmd([]stopTarget{target})().(autoStoppedMsg)
+	for _, tc := range []struct {
+		name     string
+		watch    bool
+		targets  []string
+		scanOK   bool
+		wantNil  bool
+		attached bool
+	}{
+		{"attached by name", true, []string{"herm"}, true, false, true},
+		{"nobody attached", true, nil, true, false, false},
+		{"the scan fails", true, nil, false, true, false},
+		{"auto-stop off", false, []string{"herm"}, true, true, false},
+	} {
+		stubAttachTargets(t, tc.targets, tc.scanOK)
+		before := time.Now()
+		rr := doRefresh("", tc.watch)
 
-	if _, err := os.Stat(log); err == nil || msg.stopped != 0 {
-		t.Errorf("msg = %+v: nothing may be stopped when cav cannot tell who is attached", msg)
+		if (rr.attached == nil) != tc.wantNil || rr.attached["aaaa0001"] != tc.attached {
+			t.Errorf("%s: attached = %v", tc.name, rr.attached)
+		}
+		if rr.at != rr.at.Round(0) {
+			t.Errorf("%s: at carries a monotonic reading", tc.name)
+		}
+		if rr.at.Before(before.Add(-time.Second)) || rr.at.After(time.Now()) {
+			t.Errorf("%s: at = %v, want the time of this refresh", tc.name, rr.at)
+		}
+		if w, ok := rr.workers["a-sid"]; !ok || w.updated.IsZero() {
+			t.Errorf("%s: workers = %v, want the live session's activity", tc.name, rr.workers)
+		}
 	}
 }
 
@@ -480,6 +688,7 @@ func TestRemoveStopsAResumedSessionThatStillHasItsMark(t *testing.T) {
 func TestRemoveMovesAStoppedSessionBackToTheStoppedWindow(t *testing.T) {
 	m := autoStopModel(t, time.Now())
 	m.all[0].Status = "" // stopped in place: no worker
+	m.states["a-sid"] = "stopped"
 	if err := m.unparked.Add("a-sid"); err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +700,26 @@ func TestRemoveMovesAStoppedSessionBackToTheStoppedWindow(t *testing.T) {
 	if cmd := m.removeOne(m.all[0]); cmd != nil {
 		t.Error("a session with no worker needs no stop")
 	}
-	if m.unparked.Has("a-sid") {
-		t.Error("the mark should be dropped")
+	if m.unparked.Has("a-sid") || m.dismissed.Has("a-sid") || !m.isStopped(m.all[0]) {
+		t.Error("dropping the mark is enough: the session is stopped, so it is back in the stopped window")
+	}
+}
+
+// A session that was stopped in place, resumed, and then lost its worker (it
+// finished, or the laptop slept) still has the mark but is not stopped. One d
+// must move it to the stopped window, not only drop the mark.
+func TestRemoveMovesAResumedSessionThatLostItsWorker(t *testing.T) {
+	m := autoStopModel(t, time.Now())
+	m.all[0].Status = ""
+	m.states["a-sid"] = "done"
+	if err := m.unparked.Add("a-sid"); err != nil {
+		t.Fatal(err)
+	}
+
+	if cmd := m.removeOne(m.all[0]); cmd != nil {
+		t.Error("a session with no worker needs no stop")
+	}
+	if m.unparked.Has("a-sid") || !m.isStopped(m.all[0]) {
+		t.Errorf("mark kept = %v, in the stopped window = %v; want one d to move it", m.unparked.Has("a-sid"), m.isStopped(m.all[0]))
 	}
 }

@@ -133,6 +133,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case autoStoppedMsg:
+		for _, sid := range msg.unmark {
+			if err := m.unparked.Remove(sid); err != nil {
+				m.err = err
+			}
+		}
 		if note := autoStopNote(msg); note != "" {
 			m.status = note
 		}
@@ -165,6 +170,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// places it (the list may have reordered while attached), via the same
 			// selectJobID path create/fork/clone use.
 			m.selectJobID = msg.selectJob
+		}
+		if msg.leftJob != "" {
+			m.lastAttached[msg.leftJob] = time.Now()
 		}
 		return m, nil // the background loop refreshes continuously
 
@@ -648,7 +656,7 @@ func (m *Model) openCurrent() tea.Cmd {
 	// back-note. Highlight-on-appear (selectJobID) stays for create/fork/clone,
 	// which target new sessions rather than a step-out.
 	return tea.ExecProcess(cmd, func(error) tea.Msg {
-		return actionMsg{note: note}
+		return actionMsg{note: note, leftJob: id}
 	})
 }
 
@@ -686,7 +694,7 @@ func (m *Model) popupAttachCmd(jobID, title, note string, live bool) tea.Cmd {
 			return actionMsg{err: fmt.Errorf("tmux popup: %v: %s (popups can't nest; set attach.tmuxStyle to \"switch\" if cav runs inside one)",
 				err, strings.TrimSpace(string(out)))}
 		}
-		return actionMsg{note: note}
+		return actionMsg{note: note, leftJob: jobID}
 	}
 }
 
@@ -727,7 +735,7 @@ func (m *Model) paneAttachCmd(jobID, title, note string, live bool) tea.Cmd {
 		// unzooms on its own when the pane closes.
 		_ = exec.Command("tmux", "resize-pane", "-Z", "-t", paneID).Run()
 	}
-	return watchPaneCmd(paneID, note)
+	return watchPaneCmd(paneID, jobID, note)
 }
 
 // armFastClose makes ← close an attach pane instantly. Detaching makes
@@ -758,14 +766,14 @@ func armFastClose(paneID string) {
 }
 
 // watchPaneCmd resolves once the session pane is gone — the pane-style
-// analogue of the ExecProcess exit callback. It only restores the back-note;
-// the cursor stays wherever the user has it.
-func watchPaneCmd(paneID, note string) tea.Cmd {
+// analogue of the ExecProcess exit callback. It carries the back-note and the
+// job the user stepped out of; the cursor stays wherever the user has it.
+func watchPaneCmd(paneID, jobID, note string) tea.Cmd {
 	return func() tea.Msg {
 		for {
 			out, err := exec.Command("tmux", "display", "-p", "-t", paneID, "#{pane_id}").Output()
 			if err != nil || strings.TrimSpace(string(out)) != paneID {
-				return actionMsg{note: note}
+				return actionMsg{note: note, leftJob: jobID}
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -811,17 +819,17 @@ func (m *Model) openInTmuxScratch(jobID, title, note string, live bool) tea.Cmd 
 		// pointer instead of failing the open.
 		m.status = "attached in tmux session " + name + " (switch failed: " + strings.TrimSpace(string(out)) + ")"
 	}
-	return watchScratchCmd(name, note)
+	return watchScratchCmd(name, jobID, note)
 }
 
 // watchScratchCmd resolves once the scratch session ends, restoring the
 // back-note and re-highlighting the session — the tmux-path analogue of the
 // ExecProcess exit callback.
-func watchScratchCmd(name, note string) tea.Cmd {
+func watchScratchCmd(name, jobID, note string) tea.Cmd {
 	return func() tea.Msg {
 		for {
 			if err := exec.Command("tmux", "has-session", "-t", name).Run(); err != nil {
-				return actionMsg{note: note}
+				return actionMsg{note: note, leftJob: jobID}
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -1000,9 +1008,10 @@ func (m *Model) removeOne(s claude.Session) tea.Cmd {
 			m.err = err
 			return nil
 		}
-		// A session that was stopped in place and then resumed still has the
-		// mark. It is live again, so it must be stopped like any live session.
-		if !hasLiveWorker(s) {
+		// Without the mark a stopped session is back in the stopped window. A
+		// session that was stopped in place and then resumed still had the mark
+		// but is not stopped: it goes on to be stopped or dismissed like any other.
+		if m.isStopped(s) {
 			m.status = "moved " + m.displayName(s) + " back to the stopped window (s)"
 			return nil
 		}
