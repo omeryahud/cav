@@ -16,7 +16,7 @@ func benchSessions(n int, now time.Time) ([]claude.Session, claude.Roster, []cla
 	recs := make([]claude.JobRecord, n)
 	for i := range sessions {
 		sid, jid := fmt.Sprintf("session-%04d", i), fmt.Sprintf("%08x", i)
-		sessions[i] = claude.Session{SessionID: sid, Kind: "background", StartedAt: now.Add(-time.Hour).UnixMilli()}
+		sessions[i] = claude.Session{SessionID: sid, JobID: jid, Kind: "background", StartedAt: now.Add(-time.Hour).UnixMilli()}
 		if i%4 == 0 {
 			sessions[i].Status = "idle"
 		}
@@ -26,8 +26,16 @@ func benchSessions(n int, now time.Time) ([]claude.Session, claude.Roster, []cla
 	return sessions, roster, recs
 }
 
-// The two functions auto-stop adds to every refresh, for 80 sessions (about
-// what a busy machine holds), 20 of them with a live worker.
+func benchModel(now time.Time) *Model {
+	sessions, roster, recs := benchSessions(80, now)
+	m := &Model{all: sessions, roster: roster, workers: workerActivities(sessions, roster, recs),
+		attached: map[string]bool{}, lastInUse: map[string]time.Time{}, autoStopping: map[string]time.Time{}}
+	m.cfg.AutoStop.After = 5 * time.Minute
+	return m
+}
+
+// What auto-stop adds to every refresh, for 80 sessions (about what a busy
+// machine holds), 20 of them with a live worker.
 func BenchmarkWorkerActivities(b *testing.B) {
 	sessions, roster, recs := benchSessions(80, time.Now())
 	b.ResetTimer()
@@ -38,12 +46,18 @@ func BenchmarkWorkerActivities(b *testing.B) {
 
 func BenchmarkAutoStopTargets(b *testing.B) {
 	now := time.Now()
-	sessions, roster, recs := benchSessions(80, now)
-	m := &Model{all: sessions, roster: roster, workers: workerActivities(sessions, roster, recs),
-		attached: map[string]bool{}, lastAttached: map[string]time.Time{}, autoStopping: map[string]time.Time{}}
-	m.cfg.AutoStop.After = 5 * time.Minute
+	m := benchModel(now)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.autoStopTargets(now)
+	}
+}
+
+func BenchmarkStampInUse(b *testing.B) {
+	now := time.Now()
+	m := benchModel(now)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.stampInUse(now)
 	}
 }

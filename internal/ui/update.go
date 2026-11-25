@@ -34,6 +34,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.live = msg.live
 		m.workers, m.attached, m.attachErr = msg.workers, msg.attached, msg.attachErr
 		m.unparked.Reload() // another cav may have stopped sessions and marked them to stay here
+		m.settleUnmarks(msg.at)
 		// First refresh: fold the tree if configured, then make sure the launch
 		// directory (selected since startup) is not hidden inside a folded repo.
 		if m.startupLayout {
@@ -133,14 +134,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case autoStoppedMsg:
-		for _, sid := range msg.unmark {
-			if err := m.unparked.Remove(sid); err != nil {
-				m.err = err
-			}
-		}
-		if note := autoStopNote(msg); note != "" {
-			m.status = note
-		}
+		m.autoStopDone(msg, time.Now())
 		return m, nil
 
 	case dirsMsg:
@@ -172,7 +166,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectJobID = msg.selectJob
 		}
 		if msg.leftJob != "" {
-			m.lastAttached[msg.leftJob] = time.Now()
+			m.markInUse(msg.leftJob, time.Now())
 		}
 		return m, nil // the background loop refreshes continuously
 
@@ -608,7 +602,7 @@ func (m *Model) openCurrent() tea.Cmd {
 	if err := m.entered.Mark(s.SessionID); err != nil {
 		m.err = err
 	}
-	m.lastAttached[id] = time.Now() // auto-stop: opening counts, even if no refresh sees the attach
+	m.markInUse(id, time.Now()) // auto-stop: opening counts, even if no refresh sees the attach
 	// A live worker attaches directly. A stopped or sleep-dropped session has no
 	// live worker — the daemon has released the job, so `claude attach` alone
 	// errors ("job not found" / "not known to the daemon"). Respawn it first

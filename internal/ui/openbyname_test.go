@@ -28,8 +28,9 @@ func openModel(t *testing.T, sessionNames ...string) *Model {
 	m.pendingClone = map[string]string{}
 	m.prevCache = map[string]string{}
 	m.prevReq = map[string]bool{}
-	m.lastAttached = map[string]time.Time{}
+	m.lastInUse = map[string]time.Time{}
 	m.autoStopping = map[string]time.Time{}
+	m.unmarkPending = map[string]time.Time{}
 	return m
 }
 

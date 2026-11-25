@@ -120,8 +120,10 @@ a buffered channel — drained-and-rechecked to dodge the stamp/token race). The
 header shows `zzz` while napping and "N other cavs running" (`countOtherCavs`,
 a per-refresh `pgrep -x cav`) so stale instances get noticed and quit.
 The merge:
-1. List live sessions; build `sessionId → jobId` from `LoadRoster` (authoritative,
-   correct post-branch) **plus** the on-disk job dirs (`ScanJobs`) as a fallback —
+1. List live sessions; build `sessionId → jobId`. Newer claude gives the job id
+   in the listing itself (`id`, `Session.JobID`): that wins. Without it, use
+   `LoadRoster` (authoritative, correct post-branch) **plus** the on-disk job
+   dirs (`ScanJobs`) as a fallback —
    the daemon roster is often incomplete (it may list only a few of the live
    workers), so without the fallback most live sessions would be unattachable
    ("not registered with the daemon"). State comes from `JobState(jobId)`.
@@ -422,26 +424,37 @@ visible at a glance.
   (it's on-demand and exits when cav does). `killTargets` counts only sessions
   with a real worker (`hasLiveWorker`), not everything `agents --json` lists.
 - **Auto-stop** (`autoStop.afterMs`, off by default; `internal/ui/autostop.go`):
-  on every refresh, cav stops the worker of each session that has sat idle for
-  that long, exactly as `z` would (`claude stop`, `unparked` mark, stays in the
-  main pane as ◌ stopped, `↵` respawns). `autoStopTargets` picks a session only
-  when **all** hold: its worker's status is exactly `idle` (`idleWorker`; busy
-  or any status cav does not know is left alone, while `z` keeps its looser
-  "not busy" rule); its last activity is old enough; **no terminal is
-  attached**; and it has **no background work in flight**. A session waiting
-  for input counts as idle, on purpose. The inputs:
-  - *Last activity* (`idleSince`) = the latest of `state.json`'s `updatedAt`
-    (verified: it holds still while a session idles and moves on every turn),
-    the worker's start (a wake resets the clock), the last time a terminal was
-    attached (`m.lastAttached`: stamped by every refresh that sees the attach,
-    by `openCurrent`, and by every exit path through `actionMsg.leftJob`, so
-    stepping out of a session starts a fresh window instead of killing it at
-    once), and the **watch floor** (`m.autoStopFloor`). A record with no
-    parsable `updatedAt` is never stopped. An attach from **another terminal**
-    is seen only by a poll, so its step-out is dated at the first poll that no
-    longer sees it (`m.wasAttached`), never at the last one that did: the
-    window can be a poll too long, not too short. An attach that starts and
-    ends between two polls is never seen at all.
+  cav stops the worker of a session that has sat idle for that long, exactly
+  as `z` would (`claude stop`, `unparked` mark, stays in the main pane as
+  ◌ stopped, `↵` respawns). It stops **one session per refresh**, and none
+  while a stop is still running (`m.autoStopBusy`), so every stop is picked
+  from fresh data: a session opened and left while a batch is worked through
+  is seen. `autoStopTargets` picks a session only when **all** hold: its
+  worker's status is exactly `idle` (`idleWorker`; busy or any status cav does
+  not know is left alone, while `z` keeps its looser "not busy" rule); its
+  last use is old enough; **no terminal is attached**; it has **no background
+  work in flight**; it was not just removed with `d` (`m.justStopped`); and
+  claude itself names the job (`Session.JobID`, the `id` field of
+  `agents --json`, must equal the roster's job id: a job id guessed from the
+  on-disk records can belong to another session when two records share a
+  session id). A session waiting for input counts as idle, on purpose. The
+  inputs:
+  - *Last use* (`idleSince`) = the latest of `state.json`'s `updatedAt`
+    (it holds still while a session idles; it can also hold still through a
+    whole long turn, so it is not enough alone), the worker's start (a wake
+    resets the clock), the last time cav saw the job **in use**
+    (`m.lastInUse`), and the **watch floor** (`m.autoStopFloor`). A record
+    with no parsable `updatedAt` is never stopped.
+  - *In use* (`stampInUse`, `markInUse`): a terminal is attached, the worker
+    is not idle, or it runs background work. cav sees these only by polling,
+    and what it sees end ended somewhere between two polls, so a job in use
+    now **or at the previous refresh** (`m.wasInUse`) is stamped with the
+    handling time. The window therefore runs from the first poll that sees
+    the job free: a poll too long, never too short. cav's own flows stamp
+    exactly: `openCurrent` on open, and every exit path (attach end, popup,
+    pane, scratch) through `actionMsg.leftJob`. A stamp only moves forward.
+    An attach from another terminal that starts and ends between two polls is
+    never seen at all.
   - *Watch floor*: cav knows who was attached only while it was polling, so
     idle time from before its unbroken watch does not count. `keepWatch` moves
     the floor forward when a cav starts, when two refreshes are further apart
@@ -483,19 +496,29 @@ visible at a glance.
     is **not** counted: it rests above zero on sessions that do nothing. A
     record with no `inFlight.tasks` (`InFlightKnown` false; 1 of 26 records
     here) says nothing about background work, so that session is never
-    stopped.
+    stopped. The count can be **left over**: finished in-process teammates
+    stay in it, and a record can keep a count from a process that is gone.
+    cav cannot tell that from real work, so it never stops on a count above
+    zero, and the row shows why (`autoStopHint`: `N tasks` after the age,
+    only with auto-stop on).
   A stop is issued once per job: `m.autoStopping` blocks a repeat for
-  `autoStopRetry` (1 min). Right before each stop `autoStopCmd` checks the
+  `autoStopRetry` (1 min). Right before the stop `autoStopCmd` checks the
   target again (`recheck`): the job record must be unchanged since the
   refresh (same `updatedAt`, nothing in flight), a fresh `claude agents` must
-  still list the same worker (same `startedAt`) as `idle`, and a fresh process
-  scan must show no attach. The status is asked again because the record lags:
-  a session was seen `busy` for 30s with an unchanged record. A target found
-  in use is left running and loses the `unparked` mark this round gave it
-  (`autoStoppedMsg.unmark`; a mark from before the round stays, and so does
-  the mark of a failed stop, which may still land). A job another cav already
-  stopped is skipped with its mark kept, so the footer count stays honest. It
-  only runs while a cav is open.
+  still list the same worker (same `startedAt`, same job id) as `idle`, and a
+  fresh process scan must show no attach. The status is asked again because
+  the record lags: a session was seen `busy` for ten minutes with an
+  unchanged record. `autoStopDone` handles the outcome. A target found in use
+  is left running and must lose the `unparked` mark this round gave it
+  (`Store.Mark` tells whether the mark is new, judged from the file under the
+  lock). The mark goes only when a refresh taken **after** the round still
+  shows the worker (`m.unmarkPending`, `settleUnmarks`): if `x`, `z` or
+  another cav stopped the session meanwhile, the mark is what keeps it in the
+  main pane. A mark from before the round stays, and so does the mark of a
+  failed stop, which may still land. A job another cav already stopped is
+  left with its mark. When the mark cannot be saved, nothing is stopped
+  (`Store.update` puts the in-memory set back, so the next refresh fails the
+  same way). It only runs while a cav is open.
   `d` on a session that was stopped in place and then resumed still finds its
   `unparked` mark. `removeOne` drops the mark and, unless that alone puts the
   session in the stopped window (`isStopped`), goes on as for any session: a

@@ -460,7 +460,7 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 	nameW := m.nameColWidth(width)
 	name := m.rowLabel(s)
 	body := fmt.Sprintf("%-*s %-8s %4s",
-		nameW, truncate(name, nameW), statusLabelFor(st), humanAge(s.Started()))
+		nameW, truncate(name, nameW), statusLabelFor(st), humanAge(s.Started())) + m.autoStopHint(s)
 	avail := width - 4 // marker(2) + dot(1) + space(1)
 	if avail < 1 {
 		avail = 1

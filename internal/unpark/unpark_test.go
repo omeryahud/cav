@@ -100,6 +100,52 @@ func TestConcurrentWritersLoseNothing(t *testing.T) {
 	}
 }
 
+// Mark tells a caller whether the mark is its own. It must judge that from the
+// file, not from memory: another cav may have written the mark a moment ago.
+func TestMarkReportsWhetherTheMarkIsNew(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	a, b := Load(), Load()
+
+	if added, err := a.Mark("s1"); err != nil || !added {
+		t.Errorf("first Mark = %v, %v; want true", added, err)
+	}
+	if added, err := a.Mark("s1"); err != nil || added {
+		t.Errorf("second Mark = %v, %v; want false", added, err)
+	}
+	if added, err := b.Mark("s1"); err != nil || added {
+		t.Errorf("Mark from a store that has not reloaded = %v, %v; want false, the file already holds it", added, err)
+	}
+}
+
+// A write that fails must leave no mark in memory either: a caller that asks
+// Has afterwards would otherwise act as if the mark were saved.
+func TestAFailedWriteLeavesNoMarkInMemory(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "cav")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", home)
+	s := Load()
+	if err := s.Add("kept"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	if added, err := s.Mark("new"); err == nil || added {
+		t.Fatalf("Mark = %v, %v; want an error in a read-only directory", added, err)
+	}
+	if err := s.Remove("kept"); err == nil {
+		t.Fatal("Remove should fail in a read-only directory")
+	}
+	if s.Has("new") || !s.Has("kept") {
+		t.Errorf("new = %v, kept = %v; a failed write must leave the set as it was", s.Has("new"), s.Has("kept"))
+	}
+}
+
 func TestAddReportsAFailedWrite(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(blocker, nil, 0o644); err != nil {

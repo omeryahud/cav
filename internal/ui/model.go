@@ -175,9 +175,11 @@ type Model struct {
 	workers        map[string]workerActivity // sessionId -> its live worker's activity (auto-stop)
 	attached       map[string]bool           // job ids with a terminal attached; nil = unknown (auto-stop)
 	attachErr      error                     // why attached is unknown: auto-stop is paused while it is set
-	wasAttached    map[string]bool           // the attached set of the previous refresh (auto-stop)
-	lastAttached   map[string]time.Time      // job id -> when a terminal was last seen attached
+	wasInUse       map[string]bool           // job ids in use at the previous refresh (auto-stop)
+	lastInUse      map[string]time.Time      // job id -> when it was last in use: attached, opened, not idle, or with background work
 	autoStopping   map[string]time.Time      // job id -> when auto-stop issued its stop
+	autoStopBusy   bool                      // an auto-stop round is running; the next waits for it
+	unmarkPending  map[string]time.Time      // session id -> when a round left it running (see settleUnmarks)
 	lastWatch      time.Time                 // when the previous refresh was taken (auto-stop)
 	autoStopFloor  time.Time                 // start of cav's unbroken watch; idle time before it does not count
 	cfg            config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
@@ -282,8 +284,9 @@ func New(opts Options) (*Model, error) {
 		prevReq:       map[string]bool{},
 		states:        map[string]string{},
 		justStopped:   map[string]bool{},
-		lastAttached:  map[string]time.Time{},
+		lastInUse:     map[string]time.Time{},
 		autoStopping:  map[string]time.Time{},
+		unmarkPending: map[string]time.Time{},
 		pendingClone:  map[string]string{},
 		seen:          seen.Load(),
 	}, nil
@@ -341,8 +344,9 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 	liveSet := map[string]bool{} // sessionIds with a live daemon worker
 	var sessions []claude.Session
 
-	// 1) Live sessions — resolve job ids from the daemon roster, which holds the
-	//    CURRENT sessionId even after a /branch (a job's state.json can lag).
+	// 1) Live sessions — the job id comes from the listing itself when claude
+	//    gives it (newer versions do), else from the daemon roster, which holds
+	//    the CURRENT sessionId even after a /branch (a job's state.json can lag).
 	for _, s := range live {
 		if s.Kind == "interactive" {
 			// cav manages background sessions. Interactive workers (a `!` bash
@@ -353,7 +357,10 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 		sessions = append(sessions, s)
 		seen[s.SessionID] = true
 		liveSet[s.SessionID] = true
-		jid := daemon[s.SessionID]
+		jid := s.JobID
+		if jid == "" {
+			jid = daemon[s.SessionID]
+		}
 		if jid == "" {
 			jid = jobByS[s.SessionID] // roster gap → fall back to the on-disk job dir
 		}

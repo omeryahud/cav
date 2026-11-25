@@ -5,6 +5,7 @@ import "time"
 // Session mirrors one element of `claude agents --json`.
 // Name and Status are only present for background sessions.
 type Session struct {
+	JobID     string `json:"id"` // the session's job id, as claude itself gives it ("" on older versions)
 	PID       int    `json:"pid"`
 	CWD       string `json:"cwd"`
 	Kind      string `json:"kind"`      // "background" | "interactive"

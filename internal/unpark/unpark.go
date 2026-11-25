@@ -8,6 +8,7 @@ package unpark
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -66,24 +67,50 @@ func (s *Store) Has(id string) bool { return s.m[id] }
 
 // Add marks id and persists.
 func (s *Store) Add(id string) error {
-	return s.update(func() { s.m[id] = true })
+	_, err := s.Mark(id)
+	return err
+}
+
+// Mark marks id like Add and reports whether the mark is new. It judges that
+// from the file as read under the lock, so a mark another cav just wrote does
+// not count as new.
+func (s *Store) Mark(id string) (added bool, err error) {
+	err = s.update(func() bool {
+		added = !s.m[id]
+		s.m[id] = true
+		return added
+	})
+	return added && err == nil, err
 }
 
 // Remove unmarks id (back to the stopped window) and persists.
 func (s *Store) Remove(id string) error {
-	return s.update(func() { delete(s.m, id) })
+	return s.update(func() bool {
+		had := s.m[id]
+		delete(s.m, id)
+		return had
+	})
 }
 
 // update reads the file, applies change and writes it back, all under a lock
-// every cav takes, so two cavs cannot drop each other's marks.
-func (s *Store) update(change func()) error {
+// every cav takes, so two cavs cannot drop each other's marks. change reports
+// whether it changed the set. When the write fails the set is put back, so
+// memory never holds a mark the file does not.
+func (s *Store) update(change func() (changed bool)) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
 	defer lock(s.path + ".lock")()
 	s.read()
-	change()
-	return s.save()
+	before := maps.Clone(s.m)
+	if !change() {
+		return nil
+	}
+	if err := s.save(); err != nil {
+		s.m = before
+		return err
+	}
+	return nil
 }
 
 // lock takes an exclusive lock on path and returns the function that frees it.
