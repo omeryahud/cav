@@ -40,6 +40,44 @@ func TestReloadPicksUpAnotherStoresMarks(t *testing.T) {
 	}
 }
 
+// A cav that writes before its next refresh has not reloaded. Its write must
+// still keep what the other cav wrote in between.
+func TestWritesKeepAnotherStoresMarksWithoutAReload(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	a, b := Load(), Load()
+
+	if err := a.Add("s1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Add("s2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Remove("s1"); err != nil {
+		t.Fatal(err)
+	}
+
+	onDisk := Load()
+	if onDisk.Has("s1") || !onDisk.Has("s2") {
+		t.Errorf("file should hold only s2 (b's mark kept, a's removed); s1=%v s2=%v", onDisk.Has("s1"), onDisk.Has("s2"))
+	}
+	left, _ := filepath.Glob(filepath.Join(dir, "cav", "unparked.json.*"))
+	if len(left) != 0 {
+		t.Errorf("temp files left behind: %v", left)
+	}
+}
+
+func TestAddReportsAFailedWrite(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", blocker)
+	if err := Load().Add("s1"); err == nil {
+		t.Error("Add should fail when the config directory cannot be created")
+	}
+}
+
 func TestReloadKeepsTheSetWhenTheFileIsHalfWritten(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

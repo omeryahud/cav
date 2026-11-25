@@ -127,7 +127,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.previewCmdFor(s))
 			}
 		}
-		if cmd := m.autoStopIdle(time.Now()); cmd != nil {
+		if cmd := m.autoStopIdle(msg.at, time.Now()); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 		return m, tea.Batch(cmds...)
@@ -600,6 +600,7 @@ func (m *Model) openCurrent() tea.Cmd {
 	if err := m.entered.Mark(s.SessionID); err != nil {
 		m.err = err
 	}
+	m.lastAttached[id] = time.Now() // auto-stop: opening counts, even if no refresh sees the attach
 	// A live worker attaches directly. A stopped or sleep-dropped session has no
 	// live worker — the daemon has released the job, so `claude attach` alone
 	// errors ("job not found" / "not known to the daemon"). Respawn it first
@@ -999,8 +1000,12 @@ func (m *Model) removeOne(s claude.Session) tea.Cmd {
 			m.err = err
 			return nil
 		}
-		m.status = "moved " + m.displayName(s) + " back to the stopped window (s)"
-		return nil
+		// A session that was stopped in place and then resumed still has the
+		// mark. It is live again, so it must be stopped like any live session.
+		if !hasLiveWorker(s) {
+			m.status = "moved " + m.displayName(s) + " back to the stopped window (s)"
+			return nil
+		}
 	}
 	// Persist the display name cav-locally so the stopped-window entry doesn't
 	// revert to the short id (a live session's daemon name often isn't in

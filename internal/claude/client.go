@@ -86,7 +86,10 @@ type JobRecord struct {
 	Name         string
 	State        string // working | done | blocked | stopped | ...
 	UpdatedAt    time.Time
-	InFlight     int // background work still running or queued (monitors, shells, subagents)
+	// InFlight counts background work still running: shells, subagents, monitors
+	// and scheduled wakeups. The record's "queued" count is left out, because it
+	// rests above zero on sessions that are doing nothing.
+	InFlight int
 }
 
 // ScanJobs reads all on-disk job records. Unlike `agents --json` (which lists
@@ -101,38 +104,52 @@ func ScanJobs() []JobRecord {
 	matches, _ := filepath.Glob(filepath.Join(h, ".claude", "jobs", "*", "state.json"))
 	out := make([]JobRecord, 0, len(matches))
 	for _, p := range matches {
-		b, err := os.ReadFile(p)
-		if err != nil {
-			continue
+		if rec, ok := readJob(p); ok && rec.SessionID != "" {
+			out = append(out, rec)
 		}
-		var st struct {
-			SessionID    string `json:"sessionId"`
-			CWD          string `json:"cwd"`
-			WorktreePath string `json:"worktreePath"`
-			Name         string `json:"name"`
-			State        string `json:"state"`
-			UpdatedAt    string `json:"updatedAt"`
-			InFlight     struct {
-				Tasks  int `json:"tasks"`
-				Queued int `json:"queued"`
-			} `json:"inFlight"`
-		}
-		if json.Unmarshal(b, &st) != nil || st.SessionID == "" {
-			continue
-		}
-		ts, _ := time.Parse(time.RFC3339, st.UpdatedAt) // zero on failure → treated as recent
-		out = append(out, JobRecord{
-			JobID:        filepath.Base(filepath.Dir(p)),
-			SessionID:    st.SessionID,
-			CWD:          st.CWD,
-			WorktreePath: st.WorktreePath,
-			Name:         st.Name,
-			State:        st.State,
-			UpdatedAt:    ts,
-			InFlight:     st.InFlight.Tasks + st.InFlight.Queued,
-		})
 	}
 	return out
+}
+
+// ReadJob reads one job's record. ok is false when it is missing or unreadable.
+func ReadJob(jobID string) (rec JobRecord, ok bool) {
+	h, err := os.UserHomeDir()
+	if err != nil || jobID == "" {
+		return JobRecord{}, false
+	}
+	return readJob(filepath.Join(h, ".claude", "jobs", jobID, "state.json"))
+}
+
+func readJob(path string) (JobRecord, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return JobRecord{}, false
+	}
+	var st struct {
+		SessionID    string `json:"sessionId"`
+		CWD          string `json:"cwd"`
+		WorktreePath string `json:"worktreePath"`
+		Name         string `json:"name"`
+		State        string `json:"state"`
+		UpdatedAt    string `json:"updatedAt"`
+		InFlight     struct {
+			Tasks int `json:"tasks"`
+		} `json:"inFlight"`
+	}
+	if json.Unmarshal(b, &st) != nil {
+		return JobRecord{}, false
+	}
+	ts, _ := time.Parse(time.RFC3339, st.UpdatedAt) // zero on failure → treated as recent
+	return JobRecord{
+		JobID:        filepath.Base(filepath.Dir(path)),
+		SessionID:    st.SessionID,
+		CWD:          st.CWD,
+		WorktreePath: st.WorktreePath,
+		Name:         st.Name,
+		State:        st.State,
+		UpdatedAt:    ts,
+		InFlight:     st.InFlight.Tasks,
+	}, true
 }
 
 // bin is the claude executable, set from config at startup by SetBin.

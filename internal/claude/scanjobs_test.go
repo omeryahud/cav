@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeJob(t *testing.T, home, jobID, body string) {
@@ -48,7 +49,37 @@ func TestScanJobsCountsInFlightWork(t *testing.T) {
 	for _, j := range ScanJobs() {
 		got[j.SessionID] = j.InFlight
 	}
-	if got["busy-bg"] != 3 || got["quiet"] != 0 || got["old-record"] != 0 {
-		t.Errorf("InFlight = %v, want busy-bg 3 (tasks + queued), quiet 0, old-record 0", got)
+	if got["busy-bg"] != 2 || got["quiet"] != 0 || got["old-record"] != 0 {
+		t.Errorf("InFlight = %v, want busy-bg 2 (tasks only), quiet 0, old-record 0", got)
+	}
+}
+
+// A message queue that rests above zero is not background work: counting it
+// would keep an idle session alive forever.
+func TestScanJobsIgnoresTheMessageQueue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeJob(t, home, "aaaa1111", `{"sessionId":"s","inFlight":{"tasks":0,"queued":1}}`)
+
+	if recs := ScanJobs(); len(recs) != 1 || recs[0].InFlight != 0 {
+		t.Errorf("records = %+v, want one with InFlight 0", recs)
+	}
+}
+
+func TestReadJob(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeJob(t, home, "aaaa1111", `{"sessionId":"s","state":"working","updatedAt":"2026-01-01T00:00:00Z","inFlight":{"tasks":1}}`)
+	writeJob(t, home, "bbbb2222", `{"sessionId":"s`)
+
+	rec, ok := ReadJob("aaaa1111")
+	want := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if !ok || rec.JobID != "aaaa1111" || rec.State != "working" || rec.InFlight != 1 || !rec.UpdatedAt.Equal(want) {
+		t.Errorf("ReadJob = %+v, %v", rec, ok)
+	}
+	for _, id := range []string{"bbbb2222", "missing0", ""} {
+		if _, ok := ReadJob(id); ok {
+			t.Errorf("ReadJob(%q) ok = true, want false for a half-written, missing or unnamed job", id)
+		}
 	}
 }

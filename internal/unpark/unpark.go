@@ -63,11 +63,12 @@ func (s *Store) read() {
 // Has reports whether id is marked (brought back to the main pane).
 func (s *Store) Has(id string) bool { return s.m[id] }
 
-// Add marks id and persists.
-func (s *Store) Add(id string) error { s.m[id] = true; return s.save() }
+// Add marks id and persists. It reads the file first, so a mark another cav
+// wrote since the last read is not lost.
+func (s *Store) Add(id string) error { s.read(); s.m[id] = true; return s.save() }
 
 // Remove unmarks id (back to the stopped window) and persists.
-func (s *Store) Remove(id string) error { delete(s.m, id); return s.save() }
+func (s *Store) Remove(id string) error { s.read(); delete(s.m, id); return s.save() }
 
 func (s *Store) save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
@@ -79,11 +80,33 @@ func (s *Store) save() error {
 	}
 	sort.Strings(ids)
 	b, _ := json.MarshalIndent(ids, "", "  ")
-	if err := os.WriteFile(s.path, b, 0o644); err != nil {
+	if err := writeAtomic(s.path, b); err != nil {
 		return err
 	}
 	if fi, err := os.Stat(s.path); err == nil {
 		s.mtime = fi.ModTime()
 	}
 	return nil
+}
+
+// writeAtomic replaces path in one step, so another cav never reads a
+// half-written file.
+func writeAtomic(path string, b []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // nothing to remove once the rename has worked
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }

@@ -103,6 +103,7 @@ type (
 		worktrees map[string][]claude.Worktree
 		workers   map[string]workerActivity // sessionId -> its live worker's activity
 		attached  map[string]bool           // job ids with a terminal attached; nil = unknown
+		at        time.Time                 // when the refresh finished
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
@@ -173,6 +174,8 @@ type Model struct {
 	attached       map[string]bool           // job ids with a terminal attached; nil = unknown (auto-stop)
 	lastAttached   map[string]time.Time      // job id -> when a terminal was last seen attached
 	autoStopping   map[string]time.Time      // job id -> when auto-stop issued its stop
+	lastWatch      time.Time                 // when the previous refresh was taken (auto-stop)
+	autoStopFloor  time.Time                 // start of cav's unbroken watch; idle time before it does not count
 	cfg            config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
 	seen           *seen.Store               // persisted cache: sessionId -> last name seen (survives restart + transient drops)
 	cursor         int
@@ -393,8 +396,13 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees,
 		workers: workerActivities(sessions, roster, jobRecs)}
 	if watchAttached {
-		rr.attached, _ = claude.AttachedJobs()
+		if targets, ok := attachTargets(); ok {
+			rr.attached = attachedJobs(targets, sessions, roster)
+		}
 	}
+	// Wall clock only: the monotonic clock stands still while the laptop sleeps,
+	// which would hide a sleep from the age and gap checks in keepWatch.
+	rr.at = time.Now().Round(0)
 	return rr
 }
 
@@ -662,7 +670,7 @@ func (m *Model) killTargets(mode string) []claude.Session {
 	for _, s := range m.all {
 		// agents --json also lists sessions that have no process, so the live
 		// set is not enough: only a session with a worker can be stopped.
-		if !hasLiveWorker(s) || (mode == "idle" && !idleWorker(s)) {
+		if !hasLiveWorker(s) || (mode == "idle" && s.Status == "busy") {
 			continue
 		}
 		out = append(out, s)

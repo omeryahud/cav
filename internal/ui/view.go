@@ -618,10 +618,10 @@ func (m *Model) footerBlock() string {
 		status = warnDot.Render(prompt)
 	case m.mode == modeConfirm && m.pending != nil:
 		prompt := fmt.Sprintf("Stop %q? (y/n — y confirms)", m.displayName(*m.pending))
-		switch {
-		case m.unparked.Has(m.pending.SessionID):
+		switch live := hasLiveWorker(*m.pending); {
+		case !live && m.unparked.Has(m.pending.SessionID):
 			prompt = fmt.Sprintf("Move %q back to the stopped window? (y/n)", m.displayName(*m.pending))
-		case !hasLiveWorker(*m.pending):
+		case !live:
 			prompt = fmt.Sprintf("Remove %q to the stopped window? (y/n — survives restart; resume it there)", m.displayName(*m.pending))
 		}
 		status = warnDot.Render(prompt)
