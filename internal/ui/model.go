@@ -103,6 +103,7 @@ type (
 		worktrees map[string][]claude.Worktree
 		workers   map[string]workerActivity // sessionId -> its live worker's activity
 		attached  map[string]bool           // job ids with a terminal attached; nil = unknown
+		attachErr error                     // why attached is unknown, when auto-stop asked for it
 		at        time.Time                 // when the session statuses were read
 	}
 	errMsg    struct{ err error }
@@ -173,6 +174,7 @@ type Model struct {
 	justStopped    map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
 	workers        map[string]workerActivity // sessionId -> its live worker's activity (auto-stop)
 	attached       map[string]bool           // job ids with a terminal attached; nil = unknown (auto-stop)
+	attachErr      error                     // why attached is unknown: auto-stop is paused while it is set
 	wasAttached    map[string]bool           // the attached set of the previous refresh (auto-stop)
 	lastAttached   map[string]time.Time      // job id -> when a terminal was last seen attached
 	autoStopping   map[string]time.Time      // job id -> when auto-stop issued its stop
@@ -401,9 +403,11 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees,
 		workers: workerActivities(sessions, roster, jobRecs), at: at}
 	if watchAttached {
-		if targets, ok := attachTargets(); ok {
+		targets, err := attachTargets()
+		if err == nil {
 			rr.attached = attachedJobs(targets, sessions, roster)
 		}
+		rr.attachErr = err
 	}
 	return rr
 }

@@ -70,7 +70,10 @@ func TestParseAttachTargets(t *testing.T) {
 		{"a file name", "81004 vim notes-about-claude attach.md", nil},
 		{"only odd spaces after attach", "81008 foo attach  \v", nil},
 	} {
-		got := parseAttachTargets(tc.proc + "\n")
+		got, err := parseAttachTargets(tc.proc + "\n")
+		if err != nil {
+			t.Errorf("%s: err = %v", tc.name, err)
+		}
 		if len(got) == 0 && len(tc.want) == 0 {
 			continue
 		}
@@ -80,35 +83,65 @@ func TestParseAttachTargets(t *testing.T) {
 	}
 }
 
+// The native agents view opens sessions inside its own process: no attach
+// process shows which one. While a view is open the scan must say it cannot
+// tell, even when it also sees ordinary attaches.
+func TestAgentsViewMakesTheScanUnknown(t *testing.T) {
+	for proc, view := range map[string]bool{
+		"100 claude agents":                                     true,
+		"101 /Users/someone/.local/bin/claude agents":           true,
+		"102 claude --model fable --effort max agents":          true, // a shell alias adds flags
+		"103 claude agents --cwd /some/path":                    true,
+		"104 claude --verbose agents":                           true,
+		"105 node --no-warnings /opt/claude-code/cli.js agents": true,
+		"106 claude agents --json":                              false, // cav's own poll
+		"107 claude agents --all --json":                        false,
+		"108 claude --model fable agents --json":                false,
+		"109 claude review the agents code":                     false, // a prompt
+		"110 claude attach agents":                              false, // a session named agents
+		"111 claude bg-spare --bg-spare /tmp/x.claim.sock":      false,
+		"112 vim agents":                                        false,
+		cavWrapper:                                              false, // its script holds the word
+	} {
+		targets, err := parseAttachTargets("76300 claude attach 58f5b117\n" + proc + "\n")
+		if got := errors.Is(err, ErrAgentsView); got != view {
+			t.Errorf("%q: agents view = %v, want %v", proc, got, view)
+		}
+		if view && targets != nil {
+			t.Errorf("%q: targets = %q, want none with the error", proc, targets)
+		}
+	}
+}
+
 func TestAttachTargetsReadsEveryProcess(t *testing.T) {
 	withAttachProcs(t, cavWrapper+"76300 claude attach 58f5b117\n"+cavWrapper+"80715 claude attach Hermes\n", nil)
 
-	got, ok := AttachTargets()
-	if want := []string{"58f5b117", "hermes"}; !ok || !reflect.DeepEqual(got, want) {
-		t.Errorf("AttachTargets() = %q, %v; want %q, true", got, ok, want)
+	got, err := AttachTargets()
+	if want := []string{"58f5b117", "hermes"}; err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("AttachTargets() = %q, %v; want %q, nil", got, err, want)
 	}
 }
 
 func TestAttachTargetsUnknownWhenTheScanFails(t *testing.T) {
 	withAttachProcs(t, "", errors.New("pgrep failed"))
-	if got, ok := AttachTargets(); ok || got != nil {
-		t.Errorf("AttachTargets() = %v, %v; want nil, false so callers stop nothing", got, ok)
+	if got, err := AttachTargets(); err == nil || got != nil {
+		t.Errorf("AttachTargets() = %v, %v; want nil and an error so callers stop nothing", got, err)
 	}
 }
 
 func TestAttachTargetsNobodyAttached(t *testing.T) {
 	withAttachProcs(t, "", nil)
-	got, ok := AttachTargets()
-	if !ok || got == nil || len(got) != 0 {
-		t.Errorf("AttachTargets() = %v, %v; want an empty, non-nil list and true", got, ok)
+	got, err := AttachTargets()
+	if err != nil || got == nil || len(got) != 0 {
+		t.Errorf("AttachTargets() = %v, %v; want an empty, non-nil list and no error", got, err)
 	}
 }
 
 // The real scan: stand-in processes with an attach command line must be found,
 // by id and by name, also when flags come before `attach`.
 func TestAttachTargetsFindsRealProcesses(t *testing.T) {
-	if _, ok := AttachTargets(); !ok {
-		t.Skip("the process list cannot be read here")
+	if _, err := AttachTargets(); err != nil {
+		t.Skip("cannot tell who is attached here: " + err.Error())
 	}
 	// Random targets, so two test runs at the same time do not see each other.
 	id, name := fmt.Sprintf("%08x", rand.Uint32()), fmt.Sprintf("cav-standin-%08x", rand.Uint32())
@@ -134,7 +167,7 @@ func TestAttachTargetsFindsRealProcesses(t *testing.T) {
 
 func waitForTarget(want string) bool {
 	for i := 0; i < 50; i++ {
-		if got, ok := AttachTargets(); ok && slices.Contains(got, want) {
+		if got, err := AttachTargets(); err == nil && slices.Contains(got, want) {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -455,8 +455,8 @@ visible at a glance.
     shows the world from before the attach. Idleness is measured against `at`,
     not the handling time. `at` is wall clock only (`Round(0)`): the monotonic
     clock stands still during a laptop sleep and would hide it.
-  - *Attached* = a running attach process (`claude.AttachTargets`, one
-    `pgrep -fl " attach "` per refresh, only when the feature is on).
+  - *Attached* = a running attach process (`claude.AttachTargets`, one `pgrep`
+    per refresh, only when the feature is on).
     `claude attach` takes a job id **or part of a session name**, so the scan
     returns targets, not job ids. An 8-hex id that follows `attach` on the same
     line counts from any binary, with any flags around it (the shell alias adds
@@ -468,8 +468,16 @@ visible at a glance.
     start of the job or session id, or the daemon name contains the target).
     Every loose match errs toward "attached", which can only keep a session
     alive. If the scan fails the set is unknown (`nil`) and nothing is stopped.
-    Not seen: a session opened **inside the native `claude agents` view**,
-    which attaches in-process with no attach process.
+  - *Native agents view*: `claude agents` opens sessions **inside its own
+    process**, so no attach process shows which one is on screen. The same
+    scan (`pgrep -fl " (attach |agents)"`) therefore looks for a claude whose
+    subcommand is `agents` (only flags and their values before it) without
+    `--json` (that form only prints the list, as cav's own poll does). While
+    one runs, `AttachTargets` returns `ErrAgentsView`: nothing is stopped, the
+    header shows `auto-stop paused: a claude agents view is open`
+    (`m.attachErr`, also shown for a failed scan), and closing the view starts
+    every session's window again. A forgotten agents view keeps auto-stop
+    paused: that is the price of not stopping a session someone is reading.
   - *In flight* = `state.json`'s `inFlight.tasks` (background shells,
     subagents, monitors and scheduled wakeups, all verified). `inFlight.queued`
     is **not** counted: it rests above zero on sessions that do nothing. A

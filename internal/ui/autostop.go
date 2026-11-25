@@ -266,10 +266,11 @@ func listedIdle(t stopTarget) bool {
 	return false
 }
 
-// attachedNow scans the processes again. A failed scan counts as attached.
+// attachedNow scans the processes again. A scan that cannot tell (it failed,
+// or a native agents view is open) counts as attached.
 func attachedNow(t stopTarget) bool {
-	targets, ok := attachTargets()
-	if !ok {
+	targets, err := attachTargets()
+	if err != nil {
 		return true
 	}
 	for _, target := range targets {

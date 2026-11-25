@@ -36,7 +36,12 @@ func autoStopModel(t *testing.T, now time.Time) *Model {
 func stubAttachTargets(t *testing.T, targets []string, ok bool) {
 	t.Helper()
 	orig := attachTargets
-	attachTargets = func() ([]string, bool) { return targets, ok }
+	attachTargets = func() ([]string, error) {
+		if !ok {
+			return nil, errors.New("the scan failed")
+		}
+		return targets, nil
+	}
 	t.Cleanup(func() { attachTargets = orig })
 }
 
@@ -579,6 +584,9 @@ func TestDoRefreshStampsTheTimeAndTheAttachedSet(t *testing.T) {
 		if (rr.attached == nil) != tc.wantNil || rr.attached["aaaa0001"] != tc.attached {
 			t.Errorf("%s: attached = %v", tc.name, rr.attached)
 		}
+		if wantErr := tc.watch && !tc.scanOK; (rr.attachErr != nil) != wantErr {
+			t.Errorf("%s: attachErr = %v, want an error only when a wanted scan fails", tc.name, rr.attachErr)
+		}
 		if rr.at != rr.at.Round(0) {
 			t.Errorf("%s: at carries a monotonic reading", tc.name)
 		}
@@ -588,6 +596,41 @@ func TestDoRefreshStampsTheTimeAndTheAttachedSet(t *testing.T) {
 		if w, ok := rr.workers["a-sid"]; !ok || w.updated.IsZero() {
 			t.Errorf("%s: workers = %v, want the live session's activity", tc.name, rr.workers)
 		}
+	}
+}
+
+// While a native agents view is open cav cannot tell which session it shows.
+// Nothing may be stopped, the header must say why, and every session gets a
+// full window again once the view is closed.
+func TestAnOpenAgentsViewPausesAutoStop(t *testing.T) {
+	m := autoStopModel(t, time.Now())
+	refresh := func(attached map[string]bool, err error) {
+		m.Update(refreshResult{
+			sessions:  m.all,
+			roster:    m.roster,
+			states:    map[string]string{},
+			live:      map[string]bool{"a-sid": true},
+			workers:   m.workers,
+			attached:  attached,
+			attachErr: err,
+			at:        time.Now(),
+		})
+	}
+
+	refresh(nil, claude.ErrAgentsView)
+	if len(m.autoStopping) != 0 {
+		t.Error("nothing may be stopped while an agents view is open")
+	}
+	if got := m.indicators(); !strings.Contains(got, "auto-stop paused: a claude agents view is open") {
+		t.Errorf("header = %q, want the reason for the pause", got)
+	}
+
+	refresh(map[string]bool{}, nil) // the view was closed
+	if len(m.autoStopping) != 0 {
+		t.Error("a session must get a full window after the view is closed")
+	}
+	if got := m.indicators(); strings.Contains(got, "auto-stop paused") {
+		t.Errorf("header = %q, want no pause note", got)
 	}
 }
 

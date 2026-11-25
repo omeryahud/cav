@@ -32,7 +32,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.worktrees = msg.worktrees
 		m.states = msg.states
 		m.live = msg.live
-		m.workers, m.attached = msg.workers, msg.attached
+		m.workers, m.attached, m.attachErr = msg.workers, msg.attached, msg.attachErr
 		m.unparked.Reload() // another cav may have stopped sessions and marked them to stay here
 		// First refresh: fold the tree if configured, then make sure the launch
 		// directory (selected since startup) is not hidden inside a folded repo.

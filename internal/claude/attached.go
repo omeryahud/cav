@@ -2,15 +2,23 @@ package claude
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 )
 
-// attachProcs lists the processes whose command line has an `attach` argument,
-// one "pid args" entry each. It is a package variable so tests can stub it.
+// ErrAgentsView is returned while a native `claude agents` view is open. The
+// view attaches to sessions inside its own process, so no attach process tells
+// which session it has on screen.
+var ErrAgentsView = errors.New("a claude agents view is open")
+
+// attachProcs lists the processes whose command line has an `attach` or an
+// `agents` argument, one "pid args" entry each. It is a package variable so
+// tests can stub it.
 var attachProcs = func() ([]byte, error) {
-	out, err := exec.Command("pgrep", "-fl", " attach ").Output()
+	out, err := exec.Command("pgrep", "-fl", " (attach |agents)").Output()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {
 		return nil, nil // pgrep exits 1 when nothing matches
@@ -29,26 +37,32 @@ var (
 
 // AttachTargets returns what every running attach was asked to open: a job id,
 // or a session name in lower case, because `claude attach` takes both (and part
-// of a name is enough). ok is false when the process list could not be read,
-// so a caller can tell "nobody is attached" from "unknown".
-func AttachTargets() (targets []string, ok bool) {
+// of a name is enough). It returns an error when it cannot tell who is
+// attached: the process list could not be read, or a native agents view is
+// open (ErrAgentsView). An empty list with no error means nobody is attached.
+func AttachTargets() ([]string, error) {
 	out, err := attachProcs()
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("process scan: %w", err)
 	}
-	return parseAttachTargets(string(out)), true
+	return parseAttachTargets(string(out))
 }
 
-func parseAttachTargets(out string) []string {
+func parseAttachTargets(out string) ([]string, error) {
 	targets := []string{}
 	for _, proc := range splitProcs(out) {
+		words := strings.Fields(strings.ToLower(proc))
+		args, isClaude := claudeArgs(words[1:]) // words[0] is the pid
+		if isClaude && agentsView(args) {
+			return nil, ErrAgentsView
+		}
 		ids := attachedIDs(proc)
-		if len(ids) == 0 {
-			ids = attachedNames(proc)
+		if len(ids) == 0 && isClaude {
+			ids = attachedNames(args)
 		}
 		targets = append(targets, ids...)
 	}
-	return targets
+	return targets, nil
 }
 
 func splitProcs(out string) []string {
@@ -62,6 +76,39 @@ func splitProcs(out string) []string {
 		procs = append(procs, out[s[0]:end])
 	}
 	return procs
+}
+
+// claudeArgs returns the arguments claude was started with. ok is false when
+// cmd does not run claude, directly or as the script an interpreter runs
+// (`node [flags] …/claude-code/cli.js`).
+func claudeArgs(cmd []string) (args []string, ok bool) {
+	for i, w := range cmd {
+		if i > 0 && strings.HasPrefix(w, "-") {
+			continue // an interpreter flag
+		}
+		if strings.Contains(w, "claude") {
+			return cmd[i+1:], true
+		}
+		if i > 0 {
+			break // the script the interpreter runs is not claude
+		}
+	}
+	return nil, false
+}
+
+// agentsView reports whether args start the native agents view: `agents` as
+// the subcommand (only flags and their values before it) and no `--json`,
+// which only prints the list and exits, as cav's own poll does.
+func agentsView(args []string) bool {
+	for i, w := range args {
+		if w == "agents" {
+			return !slices.Contains(args[i+1:], "--json")
+		}
+		if !strings.HasPrefix(w, "-") && (i == 0 || !strings.HasPrefix(args[i-1], "-")) {
+			return false // a prompt or another subcommand
+		}
+	}
+	return false
 }
 
 // attachedIDs returns the job ids that follow an `attach` argument on the same
@@ -86,21 +133,13 @@ func attachedIDs(proc string) []string {
 // the whole text after attach (a name can hold spaces) and its first word (in
 // case more arguments follow the name). A claude that only has the word in its
 // prompt is picked up too. That is harmless: it can only keep a session alive.
-func attachedNames(proc string) []string {
-	words := strings.Fields(strings.ToLower(proc))
-	if len(words) < 2 {
-		return nil
-	}
-	cmd := words[1:] // words[0] is the pid
-	if !runsClaude(cmd) {
-		return nil
-	}
+func attachedNames(args []string) []string {
 	var names []string
-	for i := 1; i < len(cmd); i++ {
-		if cmd[i] != "attach" {
+	for i, w := range args {
+		if w != "attach" {
 			continue
 		}
-		name := cmd[i+1:]
+		name := args[i+1:]
 		for len(name) > 0 && strings.HasPrefix(name[0], "-") {
 			name = name[1:]
 		}
@@ -112,18 +151,4 @@ func attachedNames(proc string) []string {
 		}
 	}
 	return names
-}
-
-// runsClaude reports whether cmd starts claude, directly or as the script an
-// interpreter runs (`node [flags] …/claude-code/cli.js`).
-func runsClaude(cmd []string) bool {
-	if strings.Contains(cmd[0], "claude") {
-		return true
-	}
-	for _, w := range cmd[1:] {
-		if !strings.HasPrefix(w, "-") {
-			return strings.Contains(w, "claude")
-		}
-	}
-	return false
 }
