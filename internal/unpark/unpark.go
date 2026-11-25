@@ -11,28 +11,53 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/omeryahud/cav/internal/config"
 )
 
 // Store is a persisted set of session IDs forced into the main pane.
 type Store struct {
-	path string
-	m    map[string]bool
+	path  string
+	m     map[string]bool
+	mtime time.Time // the file's modification time when it was last read or written
 }
 
 // Load reads unparked.json (missing file = empty set).
 func Load() *Store {
 	s := &Store{path: filepath.Join(config.Dir(), "unparked.json"), m: map[string]bool{}}
-	if b, err := os.ReadFile(s.path); err == nil {
-		var ids []string
-		if json.Unmarshal(b, &ids) == nil {
-			for _, id := range ids {
-				s.m[id] = true
-			}
-		}
-	}
+	s.read()
 	return s
+}
+
+// Reload picks up marks another cav wrote since this store last read or wrote
+// the file, so every open cav shows the same sessions in the main pane.
+func (s *Store) Reload() {
+	if fi, err := os.Stat(s.path); err == nil && !fi.ModTime().Equal(s.mtime) {
+		s.read()
+	}
+}
+
+// read replaces the set with the file's content. A missing or half-written
+// file leaves the set as it is, to be read again later.
+func (s *Store) read() {
+	fi, err := os.Stat(s.path)
+	if err != nil {
+		return
+	}
+	b, err := os.ReadFile(s.path)
+	if err != nil {
+		return
+	}
+	var ids []string
+	if json.Unmarshal(b, &ids) != nil {
+		return
+	}
+	s.m = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		s.m[id] = true
+	}
+	s.mtime = fi.ModTime()
 }
 
 // Has reports whether id is marked (brought back to the main pane).
@@ -54,5 +79,11 @@ func (s *Store) save() error {
 	}
 	sort.Strings(ids)
 	b, _ := json.MarshalIndent(ids, "", "  ")
-	return os.WriteFile(s.path, b, 0o644)
+	if err := os.WriteFile(s.path, b, 0o644); err != nil {
+		return err
+	}
+	if fi, err := os.Stat(s.path); err == nil {
+		s.mtime = fi.ModTime()
+	}
+	return nil
 }

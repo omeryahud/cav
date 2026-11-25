@@ -86,6 +86,7 @@ type JobRecord struct {
 	Name         string
 	State        string // working | done | blocked | stopped | ...
 	UpdatedAt    time.Time
+	InFlight     int // background work still running or queued (monitors, shells, subagents)
 }
 
 // ScanJobs reads all on-disk job records. Unlike `agents --json` (which lists
@@ -111,6 +112,10 @@ func ScanJobs() []JobRecord {
 			Name         string `json:"name"`
 			State        string `json:"state"`
 			UpdatedAt    string `json:"updatedAt"`
+			InFlight     struct {
+				Tasks  int `json:"tasks"`
+				Queued int `json:"queued"`
+			} `json:"inFlight"`
 		}
 		if json.Unmarshal(b, &st) != nil || st.SessionID == "" {
 			continue
@@ -124,6 +129,7 @@ func ScanJobs() []JobRecord {
 			Name:         st.Name,
 			State:        st.State,
 			UpdatedAt:    ts,
+			InFlight:     st.InFlight.Tasks + st.InFlight.Queued,
 		})
 	}
 	return out

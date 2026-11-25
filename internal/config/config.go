@@ -44,6 +44,7 @@ type Config struct {
 	List        List
 	Picker      Picker
 	Timeouts    Timeouts
+	AutoStop    AutoStop
 	Colors      Colors
 }
 
@@ -116,6 +117,11 @@ type Picker struct {
 // Timeouts covers one-shot claude invocations (create, fork, clone).
 type Timeouts struct {
 	Command time.Duration
+}
+
+// AutoStop covers stopping the processes of sessions that sit idle.
+type AutoStop struct {
+	After time.Duration // a session idle this long has its process stopped (0 = off)
 }
 
 // Colors is the palette, by role. Values are what lipgloss accepts: an ANSI
@@ -214,16 +220,17 @@ func Defaults() Config {
 // file mirrors config.json. Every field is a pointer so an absent key is
 // distinguishable from one explicitly set to a zero value.
 type file struct {
-	ProjectRoot *string      `json:"projectRoot"`
-	ClaudeBin   *string      `json:"claudeBin"`
-	NewSession  *newSessFile `json:"newSession"`
-	Attach      *attachFile  `json:"attach"`
-	DirPane     *dirPaneFile `json:"dirPane"`
-	Preview     *previewFile `json:"preview"`
-	List        *listFile    `json:"list"`
-	Picker      *pickerFile  `json:"picker"`
-	Timeouts    *timeoutFile `json:"timeouts"`
-	Colors      *colorsFile  `json:"colors"`
+	ProjectRoot *string       `json:"projectRoot"`
+	ClaudeBin   *string       `json:"claudeBin"`
+	NewSession  *newSessFile  `json:"newSession"`
+	Attach      *attachFile   `json:"attach"`
+	DirPane     *dirPaneFile  `json:"dirPane"`
+	Preview     *previewFile  `json:"preview"`
+	List        *listFile     `json:"list"`
+	Picker      *pickerFile   `json:"picker"`
+	Timeouts    *timeoutFile  `json:"timeouts"`
+	AutoStop    *autoStopFile `json:"autoStop"`
+	Colors      *colorsFile   `json:"colors"`
 }
 
 type previewFile struct {
@@ -269,6 +276,10 @@ type dirPaneFile struct {
 type newSessFile struct {
 	Model  *string `json:"model"`
 	Effort *string `json:"effort"`
+}
+
+type autoStopFile struct {
+	AfterMs *int `json:"afterMs"`
 }
 
 type timeoutFile struct {
@@ -397,6 +408,7 @@ func Load() (Config, error) {
 	if t := f.Timeouts; t != nil {
 		l.setMs(&cfg.Timeouts.Command, t.CommandMs, "timeouts.commandMs", 1000)
 	}
+	l.applyAutoStop(&cfg.AutoStop, f.AutoStop)
 	l.applyColors(&cfg.Colors, f.Colors)
 
 	if len(l.problems) > 0 {
@@ -520,6 +532,14 @@ func (l *loader) applyList(dst *List, c *listFile) {
 	l.setEnum(&dst.Grouping, c.Grouping, "list.grouping",
 		[]string{"dir-status", "status-dir", "recent", "alphabetical"},
 		"(want dir-status|status-dir|recent|alphabetical)")
+}
+
+// applyAutoStop reads autoStop.afterMs. 0 is a real value: it keeps the feature off.
+func (l *loader) applyAutoStop(dst *AutoStop, a *autoStopFile) {
+	if a == nil || a.AfterMs == nil || *a.AfterMs == 0 {
+		return
+	}
+	l.setMs(&dst.After, a.AfterMs, "autoStop.afterMs", 10000)
 }
 
 func (l *loader) applyColors(dst *Colors, c *colorsFile) {

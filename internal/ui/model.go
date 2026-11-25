@@ -101,6 +101,8 @@ type (
 		otherCavs int             // other running cav processes (forgotten instances burn polls)
 		repoOf    map[string]string
 		worktrees map[string][]claude.Worktree
+		workers   map[string]workerActivity // sessionId -> its live worker's activity
+		attached  map[string]bool           // job ids with a terminal attached; nil = unknown
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
@@ -167,6 +169,10 @@ type Model struct {
 	groupDefault   grouping                  // configured startup mode; the header flags any other mode
 	stoppedView    bool                      // true: showing the stopped-sessions window (s toggles)
 	justStopped    map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
+	workers        map[string]workerActivity // sessionId -> its live worker's activity (auto-stop)
+	attached       map[string]bool           // job ids with a terminal attached; nil = unknown (auto-stop)
+	lastAttached   map[string]time.Time      // job id -> when a terminal was last seen attached
+	autoStopping   map[string]time.Time      // job id -> when auto-stop issued its stop
 	cfg            config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
 	seen           *seen.Store               // persisted cache: sessionId -> last name seen (survives restart + transient drops)
 	cursor         int
@@ -269,6 +275,8 @@ func New(opts Options) (*Model, error) {
 		prevReq:       map[string]bool{},
 		states:        map[string]string{},
 		justStopped:   map[string]bool{},
+		lastAttached:  map[string]time.Time{},
+		autoStopping:  map[string]time.Time{},
 		pendingClone:  map[string]string{},
 		seen:          seen.Load(),
 	}, nil
@@ -280,7 +288,7 @@ func New(opts Options) (*Model, error) {
 func (m *Model) Init() tea.Cmd {
 	m.refreshes = make(chan refreshResult)
 	m.act = newActivity()
-	go refreshLoop(m.refreshes, m.cfg.List, m.act, m.launchDir)
+	go refreshLoop(m.refreshes, m.cfg.List, m.act, m.launchDir, m.cfg.AutoStop.After > 0)
 	if m.initNewDir != "" {
 		return tea.Batch(waitRefresh(m.refreshes),
 			createCmd(m.initNewDir, m.initNewName, "", m.cfg.NewSession, m.cfg.Timeouts.Command))
@@ -292,7 +300,8 @@ func (m *Model) Init() tea.Cmd {
 
 // doRefresh merges the session sources. launchDir is resolved to its repo along
 // with the session cwds so the pane can show it even when it has no sessions.
-func doRefresh(launchDir string) refreshResult {
+// watchAttached also lists the attached sessions, which auto-stop needs.
+func doRefresh(launchDir string, watchAttached bool) refreshResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	live, _ := claude.List(ctx) // ignore errors: still show durable on-disk jobs
@@ -380,8 +389,13 @@ func doRefresh(launchDir string) refreshResult {
 		cwds = append(cwds, launchDir)
 	}
 	repoOf, worktrees := scanWorktrees(cwds)
-	return refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet,
-		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees}
+	rr := refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet,
+		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees,
+		workers: workerActivities(sessions, roster, jobRecs)}
+	if watchAttached {
+		rr.attached, _ = claude.AttachedJobs()
+	}
+	return rr
 }
 
 // Worktree discovery is cached and throttled: a resolved cwd's repo root never
@@ -491,10 +505,10 @@ func idleDelay(l config.List, sinceInput time.Duration) time.Duration {
 // l.IdleAfter, the loop naps l.IdleRefresh between polls — a forgotten cav
 // costs ~nothing instead of a continuous poll — and any keypress wakes it
 // instantly via act.wake.
-func refreshLoop(ch chan<- refreshResult, l config.List, act *activity, launchDir string) {
+func refreshLoop(ch chan<- refreshResult, l config.List, act *activity, launchDir string, watchAttached bool) {
 	for {
 		start := time.Now()
-		rr := doRefresh(launchDir)
+		rr := doRefresh(launchDir, watchAttached)
 		if d := time.Since(start); d < l.MinRefresh {
 			time.Sleep(l.MinRefresh - d)
 		}
@@ -646,10 +660,9 @@ func previewCmd(id, jobID string, live bool, width, height int, cfg config.Previ
 func (m *Model) killTargets(mode string) []claude.Session {
 	var out []claude.Session
 	for _, s := range m.all {
-		if !m.live[s.SessionID] {
-			continue
-		}
-		if mode == "idle" && s.Status == "busy" {
+		// agents --json also lists sessions that have no process, so the live
+		// set is not enough: only a session with a worker can be stopped.
+		if !hasLiveWorker(s) || (mode == "idle" && !idleWorker(s)) {
 			continue
 		}
 		out = append(out, s)

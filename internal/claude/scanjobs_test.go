@@ -35,3 +35,20 @@ func TestScanJobsPrefersWorktreePath(t *testing.T) {
 		t.Errorf("plain record = cwd %q wt %q, want /plain and empty", got["sid-plain"].CWD, got["sid-plain"].WorktreePath)
 	}
 }
+
+func TestScanJobsCountsInFlightWork(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeJob(t, home, "aaaa1111", `{"sessionId":"busy-bg","cwd":"/a","inFlight":{"tasks":2,"queued":1,"kinds":["monitor"]}}`)
+	writeJob(t, home, "bbbb2222", `{"sessionId":"quiet","cwd":"/b","inFlight":{"tasks":0,"queued":0}}`)
+	writeJob(t, home, "cccc3333", `{"sessionId":"old-record","cwd":"/c"}`)
+
+	got := map[string]int{}
+	for _, j := range ScanJobs() {
+		got[j.SessionID] = j.InFlight
+	}
+	if got["busy-bg"] != 3 || got["quiet"] != 0 || got["old-record"] != 0 {
+		t.Errorf("InFlight = %v, want busy-bg 3 (tasks + queued), quiet 0, old-record 0", got)
+	}
+}

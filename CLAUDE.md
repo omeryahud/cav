@@ -77,7 +77,11 @@ bulk of the work. Don't "simplify" back to a single source.
    `pid, cwd, kind ("background"|"interactive"), startedAt (epoch ms),
    sessionId, name, status ("idle"|"busy")`. `name`/`status` exist only for
    background sessions. After a laptop sleep the daemon drops workers, so this
-   list shrinks and sessions "disappear".
+   list shrinks and sessions "disappear". ⚠️ Newer claude (seen in 2.1.299)
+   also lists sessions that have **no process**: `status` and `pid` are null
+   for them (and each entry gains `id`, the job id, and `state`). So "is in
+   this list" does not mean "has a worker": `hasLiveWorker` (`Status != ""`)
+   is the test for a real process (about 0.7 to 0.9 GB of RAM each, measured).
 
 2. **`~/.claude/jobs/<jobId>/state.json`** — *durable per-job record*, survives
    sleep. Fields used: `sessionId, cwd, worktreePath, name, state, updatedAt`
@@ -415,7 +419,31 @@ visible at a glance.
   in place, and `↵` respawns one where it stands. `x` on a session with no
   live worker just says so. Conversations are kept; this only kills processes.
   Main window only; the daemon's spare-process pool is out of cav's hands
-  (it's on-demand and exits when cav does).
+  (it's on-demand and exits when cav does). `killTargets` counts only sessions
+  with a real worker (`hasLiveWorker`), not everything `agents --json` lists.
+- **Auto-stop** (`autoStop.afterMs`, off by default; `internal/ui/autostop.go`):
+  on every refresh, cav stops the worker of each session that has sat idle for
+  that long, exactly as `z` would (`claude stop`, `unparked` mark, stays in the
+  main pane as ◌ stopped, `↵` respawns). `autoStopTargets` picks a session only
+  when **all** hold: it has a worker that is not busy (`idleWorker`); its last
+  activity is old enough; **no terminal is attached**; and it has **no
+  background work in flight**. The inputs:
+  - *Last activity* = the latest of `state.json`'s `updatedAt` (verified: it
+    holds still while a session idles and moves on every turn), the worker's
+    start (a wake resets the clock), and the last refresh that saw a terminal
+    attached (`m.lastAttached`, so stepping out of a session starts a fresh
+    window instead of killing it at once). A record with no parsable
+    `updatedAt` is never stopped.
+  - *Attached* = a running `claude attach <jobId>` process
+    (`claude.AttachedJobs`, one `pgrep -fl` per refresh, only when the feature
+    is on). If the scan fails the set is unknown (`nil`) and nothing is stopped.
+  - *In flight* = `state.json`'s `inFlight.tasks + queued` (monitors,
+    background shells, subagents; verified against a running background shell).
+  A stop is issued once per job: `m.autoStopping` blocks a repeat for
+  `autoStopRetry` (1 min). `claude stop` on an already-stopped job exits 0, so
+  two cavs racing for one session is harmless, and `autoStopCmd` skips a job
+  another cav already stopped so the footer count stays honest. It only runs
+  while a cav is open.
 - **Fork** (`F`): forks the highlighted session into a new child background session
   that continues its conversation. Pressing `F` first opens the **required name
   step** (prefilled with the parent's name; enter on an empty name refuses, esc
@@ -529,6 +557,7 @@ visible at a glance.
   | `attach.paneZoom` | `false` | zoom the session pane on open (fullscreen; `prefix+z` reveals the split) |
   | `dirPane.widthPercent` | `25` | width of the directory pane on the left (10 to 50); `0` hides it |
   | `dirPane.startCollapsed` | `false` | fold every repo's children on startup (`space` expands) |
+  | `autoStop.afterMs` | `0` | stop the process of a session idle this long (min 10000; `0` = off). See **Auto-stop** |
   | `colors.*` | see below | the palette, by role |
 
   **Colors** take an ANSI 256 index (`42`) or a hex string (`"#5fd700"`); text
@@ -553,7 +582,10 @@ visible at a glance.
 - `~/.config/cav/forks.json` — cav-local fork tree (forked child's jobId → parent
   sessionId) so children nest under their parent in the list; undo by editing it.
 - `~/.config/cav/unparked.json` — cav-local set of stopped session IDs brought back
-  to the main pane with `b` (overrides the stopped-window classification).
+  to the main pane with `b` (overrides the stopped-window classification). Also
+  set by `x`/`z`/`Z` and auto-stop. Each refresh reloads it when its mtime
+  changed (`Store.Reload`), so several open cavs agree on which stopped
+  sessions stay in the main pane.
 - `~/.config/cav/entered.json` — sessionId → when you last opened that session from
   cav (unix ms), stamped on open and loaded at startup; backs the `o`
   recently-entered order. Nothing on disk records this, so it's cav-only.

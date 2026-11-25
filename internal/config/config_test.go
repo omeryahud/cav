@@ -162,6 +162,25 @@ func TestAttachTmuxScratch(t *testing.T) {
 	}
 }
 
+func TestAutoStopAfterMs(t *testing.T) {
+	withConfig(t, "")
+	if cfg, _ := Load(); cfg.AutoStop.After != 0 {
+		t.Errorf("auto-stop must default to off, got %v", cfg.AutoStop.After)
+	}
+	withConfig(t, `{"autoStop": {"afterMs": 300000}}`)
+	if cfg, err := Load(); err != nil || cfg.AutoStop.After != 5*time.Minute {
+		t.Errorf("afterMs 300000: got %v err=%v, want 5m", cfg.AutoStop.After, err)
+	}
+	withConfig(t, `{"autoStop": {"afterMs": 0}}`)
+	if cfg, err := Load(); err != nil || cfg.AutoStop.After != 0 {
+		t.Errorf("afterMs 0 should mean off without complaint: got %v err=%v", cfg.AutoStop.After, err)
+	}
+	withConfig(t, `{"autoStop": {"afterMs": 500}}`)
+	if cfg, err := Load(); err == nil || cfg.AutoStop.After != 0 {
+		t.Errorf("a too-small afterMs should be rejected and stay off: got %v err=%v", cfg.AutoStop.After, err)
+	}
+}
+
 func TestFuzzyFilterKey(t *testing.T) {
 	withConfig(t, "")
 	if cfg, _ := Load(); !cfg.List.FuzzyFilter {
