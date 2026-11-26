@@ -4,18 +4,44 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
 	"time"
 )
 
-func withAttachProcs(t *testing.T, out string, err error) {
+// withAttachProcs stubs the process list, one output per scan (the last one
+// repeats), in an empty home so no real session file is read. It returns the
+// home directory.
+func withAttachProcs(t *testing.T, err error, outs ...string) (home string) {
 	t.Helper()
-	orig := attachProcs
-	attachProcs = func() ([]byte, error) { return []byte(out), err }
-	t.Cleanup(func() { attachProcs = orig })
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	origProcs, origSettle := attachProcs, agentsViewSettle
+	agentsViewSettle = 0
+	scan := 0
+	attachProcs = func() ([]byte, error) {
+		out := outs[min(scan, len(outs)-1)]
+		scan++
+		return []byte(out), err
+	}
+	t.Cleanup(func() { attachProcs, agentsViewSettle = origProcs, origSettle })
+	return home
+}
+
+// writeSessionFile writes a claude process record under home.
+func writeSessionFile(t *testing.T, home string, pid int, body string) {
+	t.Helper()
+	dir := filepath.Join(home, ".claude", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.json", pid)), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // cavWrapper is what `pgrep -fl` prints for the shell cav runs an attach in,
@@ -58,6 +84,9 @@ func TestParseAttachTargets(t *testing.T) {
 		{"a short id is kept as a name target", "76314 claude attach 58f5b", []string{"58f5b"}},
 		{"a name with spaces: whole and first word", "76306 claude --model fable attach my cool session", []string{"my cool session", "my"}},
 		{"a name followed by a flag", "76310 claude attach hermes --verbose", []string{"hermes --verbose", "hermes"}},
+		{"a name after a flag and its value", "76315 claude attach --model fable my-session", []string{"fable my-session", "fable", "my-session"}},
+		{"by name, a program path with a space", "76316 /Applications/Claude Code/bin/claude attach hermes", []string{"hermes"}},
+		{"a script that only lives under ~/.claude", "76317 python3 /Users/x/.claude/skills/tool.py attach hermes", nil},
 		{"a name after a newline in an earlier argument", "76311 claude --append-system-prompt one\ntwo attach hermes", []string{"hermes"}},
 		{"the word twice", "76312 claude --append-system-prompt never attach files attach hermes", []string{"files attach hermes", "files", "hermes"}},
 		{"the word in a prompt only protects", "81007 claude fix the attach bug", []string{"bug"}},
@@ -94,14 +123,20 @@ func TestAgentsViewMakesTheScanUnknown(t *testing.T) {
 		"103 claude agents --cwd /some/path":                    true,
 		"104 claude --verbose agents":                           true,
 		"105 node --no-warnings /opt/claude-code/cli.js agents": true,
-		"106 claude agents --json":                              false, // cav's own poll
-		"107 claude agents --all --json":                        false,
-		"108 claude --model fable agents --json":                false,
-		"109 claude review the agents code":                     false, // a prompt
-		"110 claude attach agents":                              false, // a session named agents
-		"111 claude bg-spare --bg-spare /tmp/x.claim.sock":      false,
-		"112 vim agents":                                        false,
-		cavWrapper:                                              false, // its script holds the word
+		"113 /Applications/Claude Code/bin/claude agents":       true, // a path with a space
+		// Paths that only hold the word claude are not claude.
+		"114 python3 /Users/x/.claude/skills/tool.py agents list":    false,
+		"115 bash /Users/x/.claude/jobs/abcd0001/tmp/run.sh agents":  false,
+		"116 /Users/x/proj/.claude/worktrees/w/bin/mytool agents":    false,
+		"117 claude --model fable --effort max tell me about agents": false, // a prompt after alias flags
+		"106 claude agents --json":                                   false, // cav's own poll
+		"107 claude agents --all --json":                             false,
+		"108 claude --model fable agents --json":                     false,
+		"109 claude review the agents code":                          false, // a prompt
+		"110 claude attach agents":                                   false, // a session named agents
+		"111 claude bg-spare --bg-spare /tmp/x.claim.sock":           false,
+		"112 vim agents": false,
+		cavWrapper:       false, // its script holds the word
 	} {
 		targets, err := parseAttachTargets("76300 claude attach 58f5b117\n" + proc + "\n")
 		if got := errors.Is(err, ErrAgentsView); got != view {
@@ -114,7 +149,7 @@ func TestAgentsViewMakesTheScanUnknown(t *testing.T) {
 }
 
 func TestAttachTargetsReadsEveryProcess(t *testing.T) {
-	withAttachProcs(t, cavWrapper+"76300 claude attach 58f5b117\n"+cavWrapper+"80715 claude attach Hermes\n", nil)
+	withAttachProcs(t, nil, cavWrapper+"76300 claude attach 58f5b117\n"+cavWrapper+"80715 claude attach Hermes\n")
 
 	got, err := AttachTargets()
 	if want := []string{"58f5b117", "hermes"}; err != nil || !reflect.DeepEqual(got, want) {
@@ -123,17 +158,67 @@ func TestAttachTargetsReadsEveryProcess(t *testing.T) {
 }
 
 func TestAttachTargetsUnknownWhenTheScanFails(t *testing.T) {
-	withAttachProcs(t, "", errors.New("pgrep failed"))
+	withAttachProcs(t, errors.New("pgrep failed"), "")
 	if got, err := AttachTargets(); err == nil || got != nil {
 		t.Errorf("AttachTargets() = %v, %v; want nil and an error so callers stop nothing", got, err)
 	}
 }
 
 func TestAttachTargetsNobodyAttached(t *testing.T) {
-	withAttachProcs(t, "", nil)
+	withAttachProcs(t, nil, "")
 	got, err := AttachTargets()
 	if err != nil || got == nil || len(got) != 0 {
 		t.Errorf("AttachTargets() = %v, %v; want an empty, non-nil list and no error", got, err)
+	}
+}
+
+// Stepping out of an attach with ← turns the attach process into `claude
+// agents` for a moment, until cav's watchdog ends it. That is not an open
+// view: it must not pause auto-stop. A view that is still there on a second
+// look is real.
+func TestAttachTargetsLooksTwiceAtAnAgentsView(t *testing.T) {
+	const attached = "76300 claude attach 58f5b117\n"
+
+	withAttachProcs(t, nil, attached+"80715 claude agents\n", attached)
+	if got, err := AttachTargets(); err != nil || !reflect.DeepEqual(got, []string{"58f5b117"}) {
+		t.Errorf("a view that is gone on the second look: got %q, %v; want the attach and no error", got, err)
+	}
+
+	withAttachProcs(t, nil, attached+"80715 claude agents\n")
+	if got, err := AttachTargets(); !errors.Is(err, ErrAgentsView) || got != nil {
+		t.Errorf("a view that stays: got %q, %v; want ErrAgentsView", got, err)
+	}
+}
+
+// ← in a plain interactive claude opens the agents view inside that process:
+// its command line shows nothing. The process notes the job it parked in its
+// session file, and that is the sign of an open view.
+func TestAttachTargetsSeesAViewInsideAClaudeProcess(t *testing.T) {
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Skip("cannot run a helper process: " + err.Error())
+	}
+	for _, tc := range []struct {
+		name string
+		pid  int
+		body string
+		view bool
+	}{
+		{"a running process with a parked job", os.Getpid(), `{"pid":%d,"kind":"interactive","parkedJobId":"abcd0001"}`, true},
+		{"a running process with nothing parked", os.Getpid(), `{"pid":%d,"kind":"interactive"}`, false},
+		{"a record left by a process that is gone", gone.Process.Pid, `{"pid":%d,"parkedJobId":"abcd0001"}`, false},
+		{"a half-written record", os.Getpid(), `{"pid":%d,"parkedJobId":"abcd`, false},
+	} {
+		home := withAttachProcs(t, nil, "76300 claude attach 58f5b117\n")
+		writeSessionFile(t, home, tc.pid, fmt.Sprintf(tc.body, tc.pid))
+
+		got, err := AttachTargets()
+		if errors.Is(err, ErrAgentsView) != tc.view {
+			t.Errorf("%s: got %q, %v; want view = %v", tc.name, got, err, tc.view)
+		}
+		if !tc.view && !reflect.DeepEqual(got, []string{"58f5b117"}) {
+			t.Errorf("%s: targets = %q, want the attach", tc.name, got)
+		}
 	}
 }
 

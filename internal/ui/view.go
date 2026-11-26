@@ -269,8 +269,8 @@ func (m *Model) indicators() string {
 	if m.otherCavs > 0 {
 		parts = append(parts, fmt.Sprintf("%d other cavs running", m.otherCavs))
 	}
-	if m.attachErr != nil {
-		parts = append(parts, "auto-stop paused: "+m.attachErr.Error())
+	if m.watchErr != nil {
+		parts = append(parts, "auto-stop paused: "+m.watchErr.Error())
 	}
 	return strings.Join(parts, "  ")
 }
@@ -438,6 +438,11 @@ func (m *Model) rowLabel(s claude.Session) string {
 // off, the column stretches to the longest visible row label so every name
 // fits — bounded by width-18 so the status and age columns keep their room.
 func (m *Model) nameColWidth(width int) int {
+	// Rows with an auto-stop hint need room for it after the age, unless that
+	// would squeeze the names below their floor: then the hint is left out.
+	if w := width - m.hintWidth(); w-m.cfg.List.NameColReserve >= 18 {
+		width = w
+	}
 	if m.showPreview() {
 		return clamp(width-m.cfg.List.NameColReserve, 18, m.cfg.List.NameColMax)
 	}
@@ -460,10 +465,15 @@ func (m *Model) rowLine(s claude.Session, sel, attach bool, width int) string {
 	nameW := m.nameColWidth(width)
 	name := m.rowLabel(s)
 	body := fmt.Sprintf("%-*s %-8s %4s",
-		nameW, truncate(name, nameW), statusLabelFor(st), humanAge(s.Started())) + m.autoStopHint(s)
+		nameW, truncate(name, nameW), statusLabelFor(st), humanAge(s.Started()))
 	avail := width - 4 // marker(2) + dot(1) + space(1)
 	if avail < 1 {
 		avail = 1
+	}
+	// The hint goes on only when it fits whole: cut short, it would also cut
+	// the age.
+	if hint := m.autoStopHint(s); len([]rune(body))+len(hint) <= avail {
+		body += hint
 	}
 	body = truncate(body, avail)
 	glyph, dotStyle := statusGlyphStyle(st)

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -111,10 +112,28 @@ func attachedJobs(targets []string, sessions []claude.Session, roster claude.Ros
 	return out
 }
 
+// errListFailed is why auto-stop is paused when `claude agents` fails: with no
+// statuses cav cannot tell which session is busy.
+var errListFailed = errors.New("claude cannot list the sessions")
+
+// watchedJobs returns the jobs with a terminal attached, or why this refresh
+// cannot tell: the session list failed, the process scan failed, or a native
+// agents view is open. A refresh that cannot tell is one cav did not watch.
+func watchedJobs(listErr error, sessions []claude.Session, roster claude.Roster) (map[string]bool, error) {
+	if listErr != nil {
+		return nil, errListFailed
+	}
+	targets, err := attachTargets()
+	if err != nil {
+		return nil, err
+	}
+	return attachedJobs(targets, sessions, roster), nil
+}
+
 // keepWatch records the refresh taken at `at` and reports whether auto-stop may
-// act on it. cav knows who was attached only while it was polling. After a gap
-// (a refresh that waited behind a full-screen attach, a failed process scan, a
-// suspended cav, a laptop sleep) every session gets a full idle window again.
+// act on it. cav knows what was in use only while it was polling. After a gap
+// (a refresh that waited behind a full-screen attach, one that could not tell,
+// a suspended cav, a laptop sleep) every session gets a full idle window again.
 func (m *Model) keepWatch(at, now time.Time) bool {
 	gap := at.Sub(m.lastWatch)
 	m.lastWatch = at
@@ -128,6 +147,13 @@ func (m *Model) keepWatch(at, now time.Time) bool {
 	return true
 }
 
+// steppedOut is the message every way out of a session ends in (the attach
+// ending, a tmux popup, pane or scratch closing): the back-note, and the job
+// that was left, so its idle window starts again.
+func steppedOut(note, jobID string) actionMsg {
+	return actionMsg{note: note, leftJob: jobID}
+}
+
 // markInUse records that a job was in use at t. A stamp only moves forward.
 func (m *Model) markInUse(jobID string, t time.Time) {
 	if jobID != "" && t.After(m.lastInUse[jobID]) {
@@ -136,18 +162,25 @@ func (m *Model) markInUse(jobID string, t time.Time) {
 }
 
 // stampInUse notes every job this refresh shows in use: a terminal is
-// attached, its worker is not idle, or it runs background work. A job in use
-// now or at the previous refresh was in use until about now, because what just
-// ended did so somewhere between the two polls. So the idle window starts at
-// the first poll that sees the job free, never earlier than the real moment.
+// attached, its worker is not idle, it runs background work, or the previous
+// refresh did not show its worker at all (cav did not watch it then: the list
+// can miss a worker for a poll). A job in use now or at the previous refresh
+// was in use until about now, because what just ended did so somewhere between
+// the two polls. So the idle window starts at the first poll that sees the job
+// free, never earlier than the real moment.
 func (m *Model) stampInUse(now time.Time) {
-	inUse := map[string]bool{}
+	inUse, workers := map[string]bool{}, map[string]bool{}
 	for jid := range m.attached {
 		inUse[jid] = true
 	}
 	for _, s := range m.all {
-		if hasLiveWorker(s) && (!idleWorker(s) || m.workers[s.SessionID].inFlight > 0) {
-			inUse[m.roster[s.SessionID]] = true
+		if !hasLiveWorker(s) {
+			continue
+		}
+		jid := m.roster[s.SessionID]
+		workers[jid] = true
+		if !idleWorker(s) || m.workers[s.SessionID].inFlight > 0 || !m.hadWorker[jid] {
+			inUse[jid] = true
 		}
 	}
 	for _, jobs := range []map[string]bool{m.wasInUse, inUse} {
@@ -155,7 +188,7 @@ func (m *Model) stampInUse(now time.Time) {
 			m.markInUse(jid, now)
 		}
 	}
-	m.wasInUse = inUse
+	m.wasInUse, m.hadWorker = inUse, workers
 }
 
 // idleSince is the latest moment the session may have been in use: its own
@@ -265,30 +298,33 @@ func (m *Model) autoStopDone(msg autoStoppedMsg, now time.Time) {
 
 // settleUnmarks drops the keep-here mark of each target a round left running,
 // once a refresh taken after that round still shows its worker. A session that
-// lost its worker meanwhile (x, z or another cav stopped it) keeps the mark,
-// which is what keeps it in the main pane.
+// was stopped meanwhile (by x, z or another cav) keeps the mark, which is what
+// keeps it in the main pane. A refresh that shows neither settles nothing: the
+// list can miss a worker for a poll. After autoStopRetry the mark just stays.
 func (m *Model) settleUnmarks(at time.Time) {
 	for sid, since := range m.unmarkPending {
 		if !at.After(since) {
 			continue
 		}
+		switch s, found := m.session(sid); {
+		case found && hasLiveWorker(s):
+			if err := m.unparked.Remove(sid); err != nil {
+				m.err = err
+			}
+		case found && m.states[sid] != "stopped" && at.Sub(since) < autoStopRetry:
+			continue // not known yet
+		}
 		delete(m.unmarkPending, sid)
-		if !m.hasWorker(sid) {
-			continue
-		}
-		if err := m.unparked.Remove(sid); err != nil {
-			m.err = err
-		}
 	}
 }
 
-func (m *Model) hasWorker(sessionID string) bool {
+func (m *Model) session(sessionID string) (claude.Session, bool) {
 	for _, s := range m.all {
 		if s.SessionID == sessionID {
-			return hasLiveWorker(s)
+			return s, true
 		}
 	}
-	return false
+	return claude.Session{}, false
 }
 
 // recheck looks at a target again just before its stop, because the refresh
@@ -348,4 +384,13 @@ func (m *Model) autoStopHint(s claude.Session) string {
 		return fmt.Sprintf("  %d tasks", n)
 	}
 	return ""
+}
+
+// hintWidth is the width of the longest auto-stop hint among the visible rows.
+func (m *Model) hintWidth() int {
+	w := 0
+	for i := range m.view {
+		w = max(w, len(m.autoStopHint(m.view[i])))
+	}
+	return w
 }

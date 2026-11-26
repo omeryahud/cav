@@ -1,18 +1,28 @@
 package claude
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // ErrAgentsView is returned while a native `claude agents` view is open. The
 // view attaches to sessions inside its own process, so no attach process tells
 // which session it has on screen.
 var ErrAgentsView = errors.New("a claude agents view is open")
+
+// agentsViewSettle is how long a `claude agents` process must last before it
+// counts as a view. Stepping out of an attach with ← turns the attach into one
+// for a moment, until cav's watchdog ends it.
+var agentsViewSettle = 500 * time.Millisecond
 
 // attachProcs lists the processes whose command line has an `attach` or an
 // `agents` argument, one "pid args" entry each. It is a package variable so
@@ -41,6 +51,18 @@ var (
 // attached: the process list could not be read, or a native agents view is
 // open (ErrAgentsView). An empty list with no error means nobody is attached.
 func AttachTargets() ([]string, error) {
+	targets, err := scanAttach()
+	if errors.Is(err, ErrAgentsView) {
+		time.Sleep(agentsViewSettle)
+		targets, err = scanAttach()
+	}
+	if err == nil && parkedView() {
+		return nil, ErrAgentsView
+	}
+	return targets, err
+}
+
+func scanAttach() ([]string, error) {
 	out, err := attachProcs()
 	if err != nil {
 		return nil, fmt.Errorf("process scan: %w", err)
@@ -78,22 +100,33 @@ func splitProcs(out string) []string {
 	return procs
 }
 
+// programWords is how many leading words of a command line can hold the
+// program: an interpreter, its flags, and a path cut in two by a space.
+const programWords = 4
+
 // claudeArgs returns the arguments claude was started with. ok is false when
-// cmd does not run claude, directly or as the script an interpreter runs
-// (`node [flags] …/claude-code/cli.js`).
+// cmd does not run claude. The program is known by its base name, `claude` or
+// `cli.js` inside a claude-code package, so a script that only lives under
+// ~/.claude does not count. It is the first word, or a later path among the
+// leading words (`node [flags] …/cli.js`, `/bin/sh …/claude`, a path with a
+// space); the last such path wins.
 func claudeArgs(cmd []string) (args []string, ok bool) {
+	at := -1
 	for i, w := range cmd {
-		if i > 0 && strings.HasPrefix(w, "-") {
-			continue // an interpreter flag
+		if i == programWords {
+			break
 		}
-		if strings.Contains(w, "claude") {
-			return cmd[i+1:], true
-		}
-		if i > 0 {
-			break // the script the interpreter runs is not claude
+		slash := strings.LastIndex(w, "/")
+		base := w[slash+1:]
+		isClaude := base == "claude" || (base == "cli.js" && strings.Contains(w, "claude-code"))
+		if isClaude && (i == 0 || slash >= 0) {
+			at = i
 		}
 	}
-	return nil, false
+	if at < 0 {
+		return nil, false
+	}
+	return cmd[at+1:], true
 }
 
 // agentsView reports whether args start the native agents view: `agents` as
@@ -109,6 +142,43 @@ func agentsView(args []string) bool {
 		}
 	}
 	return false
+}
+
+// parkedView reports whether a claude process shows the agents view inside
+// itself. Pressing ← in a plain interactive claude parks that conversation as
+// a job and opens the view in the same process, so there is no `agents`
+// argument to see. Meanwhile the process keeps the parked job's id in its own
+// record under ~/.claude/sessions.
+func parkedView() bool {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	files, _ := filepath.Glob(filepath.Join(h, ".claude", "sessions", "*.json"))
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var rec struct {
+			PID         int    `json:"pid"`
+			ParkedJobID string `json:"parkedJobId"`
+		}
+		if json.Unmarshal(b, &rec) == nil && rec.ParkedJobID != "" && processAlive(rec.PID) {
+			return true
+		}
+	}
+	return false
+}
+
+// processAlive reports whether pid is a running process. A record can outlive
+// a process that crashed.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // attachedIDs returns the job ids that follow an `attach` argument on the same
@@ -129,25 +199,45 @@ func attachedIDs(proc string) []string {
 	return ids
 }
 
-// attachedNames returns the session name a `claude attach <name>` was given:
-// the whole text after attach (a name can hold spaces) and its first word (in
-// case more arguments follow the name). A claude that only has the word in its
-// prompt is picked up too. That is harmless: it can only keep a session alive.
+// attachedNames returns the session names a `claude attach <name>` may have
+// been given: the whole text after attach (a name can hold spaces) and its
+// first word. When flags stand among the words, each word can be the name
+// (`attach --model fable my-session`), so each one is returned. A claude that
+// only has the word in its prompt is picked up too. Every extra name is
+// harmless: it can only keep a session alive.
 func attachedNames(args []string) []string {
 	var names []string
+	add := func(name string) {
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
 	for i, w := range args {
 		if w != "attach" {
 			continue
 		}
-		name := args[i+1:]
-		for len(name) > 0 && strings.HasPrefix(name[0], "-") {
-			name = name[1:]
+		var words []string
+		flags := false
+		for _, r := range args[i+1:] {
+			if strings.HasPrefix(r, "-") {
+				flags = true
+			} else {
+				words = append(words, r)
+			}
 		}
-		if len(name) > 0 {
-			names = append(names, strings.Join(name, " "))
+		if len(words) == 0 {
+			continue
 		}
-		if len(name) > 1 {
-			names = append(names, name[0])
+		rest := args[i+1:]
+		for strings.HasPrefix(rest[0], "-") {
+			rest = rest[1:]
+		}
+		add(strings.Join(rest, " "))
+		add(words[0])
+		if flags {
+			for _, word := range words {
+				add(word)
+			}
 		}
 	}
 	return names

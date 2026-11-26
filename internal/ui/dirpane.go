@@ -59,7 +59,11 @@ func (m *Model) buildDirTree() []dirNode {
 	for _, s := range m.all {
 		if m.passesFilter(s) {
 			total++
-			cnt[s.CWD]++
+			// A session with no known directory shows only under "all". As a tree
+			// path, "" would also mean "no parent" and loop the tree builder.
+			if s.CWD != "" {
+				cnt[s.CWD]++
+			}
 		}
 	}
 	if m.launchDir != "" {

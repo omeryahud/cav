@@ -70,6 +70,38 @@ func TestScanJobsIgnoresTheMessageQueue(t *testing.T) {
 	}
 }
 
+// A count in a shape cav does not know must not cost the whole record: the
+// session would leave the list. Only the count becomes unknown.
+func TestScanJobsKeepsARecordWithAnOddInFlight(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for id, inFlight := range map[string]string{
+		"aaaa0001": `5`,
+		"aaaa0002": `[1]`,
+		"aaaa0003": `{"tasks":"3"}`,
+		"aaaa0004": `null`,
+		"aaaa0005": `{"tasks":2.0}`,
+	} {
+		writeJob(t, home, id, `{"sessionId":"s-`+id+`","state":"working","inFlight":`+inFlight+`}`)
+	}
+
+	got := map[string]JobRecord{}
+	for _, j := range ScanJobs() {
+		got[j.JobID] = j
+	}
+	if len(got) != 5 {
+		t.Fatalf("records = %d, want all 5 kept", len(got))
+	}
+	for _, id := range []string{"aaaa0001", "aaaa0002", "aaaa0003", "aaaa0004"} {
+		if got[id].InFlightKnown || got[id].State != "working" {
+			t.Errorf("%s = %+v, want the record with an unknown count", id, got[id])
+		}
+	}
+	if j := got["aaaa0005"]; !j.InFlightKnown || j.InFlight != 2 {
+		t.Errorf("a count written as 2.0 = %+v, want 2", j)
+	}
+}
+
 func TestReadJob(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

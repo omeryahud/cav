@@ -103,7 +103,7 @@ type (
 		worktrees map[string][]claude.Worktree
 		workers   map[string]workerActivity // sessionId -> its live worker's activity
 		attached  map[string]bool           // job ids with a terminal attached; nil = unknown
-		attachErr error                     // why attached is unknown, when auto-stop asked for it
+		watchErr  error                     // why auto-stop cannot trust this refresh (set only when it asked)
 		at        time.Time                 // when the session statuses were read
 	}
 	errMsg    struct{ err error }
@@ -174,12 +174,13 @@ type Model struct {
 	justStopped    map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
 	workers        map[string]workerActivity // sessionId -> its live worker's activity (auto-stop)
 	attached       map[string]bool           // job ids with a terminal attached; nil = unknown (auto-stop)
-	attachErr      error                     // why attached is unknown: auto-stop is paused while it is set
+	watchErr       error                     // why auto-stop cannot trust the last refresh: it is paused while this is set
 	wasInUse       map[string]bool           // job ids in use at the previous refresh (auto-stop)
 	lastInUse      map[string]time.Time      // job id -> when it was last in use: attached, opened, not idle, or with background work
 	autoStopping   map[string]time.Time      // job id -> when auto-stop issued its stop
 	autoStopBusy   bool                      // an auto-stop round is running; the next waits for it
 	unmarkPending  map[string]time.Time      // session id -> when a round left it running (see settleUnmarks)
+	hadWorker      map[string]bool           // job ids with a live worker at the previous refresh (auto-stop)
 	lastWatch      time.Time                 // when the previous refresh was taken (auto-stop)
 	autoStopFloor  time.Time                 // start of cav's unbroken watch; idle time before it does not count
 	cfg            config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
@@ -314,7 +315,7 @@ func (m *Model) Init() tea.Cmd {
 func doRefresh(launchDir string, watchAttached bool) refreshResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	live, _ := liveSessions(ctx) // ignore errors: still show durable on-disk jobs
+	live, listErr := liveSessions(ctx) // on an error, still show the durable on-disk jobs
 	// Wall clock only: the monotonic clock stands still while the laptop sleeps,
 	// which would hide a sleep from the age and gap checks in keepWatch.
 	at := time.Now().Round(0)
@@ -400,7 +401,9 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 
 	cwds := make([]string, 0, len(sessions)+1)
 	for _, s := range sessions {
-		cwds = append(cwds, s.CWD)
+		if s.CWD != "" { // git would resolve "" to cav's own directory
+			cwds = append(cwds, s.CWD)
+		}
 	}
 	if launchDir != "" {
 		cwds = append(cwds, launchDir)
@@ -410,11 +413,7 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees,
 		workers: workerActivities(sessions, roster, jobRecs), at: at}
 	if watchAttached {
-		targets, err := attachTargets()
-		if err == nil {
-			rr.attached = attachedJobs(targets, sessions, roster)
-		}
-		rr.attachErr = err
+		rr.attached, rr.watchErr = watchedJobs(listErr, sessions, roster)
 	}
 	return rr
 }

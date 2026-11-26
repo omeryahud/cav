@@ -134,12 +134,18 @@ func readJob(path string) (JobRecord, bool) {
 		Name         string `json:"name"`
 		State        string `json:"state"`
 		UpdatedAt    string `json:"updatedAt"`
-		InFlight     struct {
-			Tasks *int `json:"tasks"`
-		} `json:"inFlight"`
+		// Kept raw: a shape cav does not know must cost only the count, not the
+		// whole record.
+		InFlight json.RawMessage `json:"inFlight"`
 	}
 	if json.Unmarshal(b, &st) != nil {
 		return JobRecord{}, false
+	}
+	var inFlight struct {
+		Tasks *float64 `json:"tasks"`
+	}
+	if json.Unmarshal(st.InFlight, &inFlight) != nil {
+		inFlight.Tasks = nil
 	}
 	ts, _ := time.Parse(time.RFC3339, st.UpdatedAt) // zero on failure → treated as recent
 	rec := JobRecord{
@@ -151,8 +157,8 @@ func readJob(path string) (JobRecord, bool) {
 		State:        st.State,
 		UpdatedAt:    ts,
 	}
-	if st.InFlight.Tasks != nil {
-		rec.InFlight, rec.InFlightKnown = *st.InFlight.Tasks, true
+	if inFlight.Tasks != nil {
+		rec.InFlight, rec.InFlightKnown = int(*inFlight.Tasks), true
 	}
 	return rec, true
 }

@@ -187,6 +187,9 @@ visible at a glance.
   (e.g. two different `substrate` repos) are relabeled `parent/leaf`
   (`disambiguateTopLevel`).
   Empty worktrees (no session) are shown too, so `.`/`W` can target them.
+  A session whose record has **no cwd** gets no row and counts only under
+  `all`: as a tree path, `""` also means "no parent", which made `repoNodes`
+  recurse without end.
   Counts are **subtree totals**. `tab`/`shift+tab` walk visible rows
   (`cycleDir`); the position is remembered in `m.dirIdx` so a node briefly
   dropping out of a refresh doesn't snap the cursor back to the top
@@ -446,20 +449,25 @@ visible at a glance.
     (`m.lastInUse`), and the **watch floor** (`m.autoStopFloor`). A record
     with no parsable `updatedAt` is never stopped.
   - *In use* (`stampInUse`, `markInUse`): a terminal is attached, the worker
-    is not idle, or it runs background work. cav sees these only by polling,
-    and what it sees end ended somewhere between two polls, so a job in use
-    now **or at the previous refresh** (`m.wasInUse`) is stamped with the
-    handling time. The window therefore runs from the first poll that sees
-    the job free: a poll too long, never too short. cav's own flows stamp
-    exactly: `openCurrent` on open, and every exit path (attach end, popup,
-    pane, scratch) through `actionMsg.leftJob`. A stamp only moves forward.
-    An attach from another terminal that starts and ends between two polls is
-    never seen at all.
+    is not idle, it runs background work, or the previous refresh did not
+    show the worker at all (`m.hadWorker`: the list can miss a worker for a
+    poll, and a worker cav did not see was not watched). cav sees these only
+    by polling, and what it sees end ended somewhere between two polls, so a
+    job in use now **or at the previous refresh** (`m.wasInUse`) is stamped
+    with the handling time. The window therefore runs from the first poll
+    that sees the job free: a poll too long, never too short. cav's own flows
+    stamp exactly: `openCurrent` on open, and every exit path (attach end,
+    popup, pane, scratch) through `steppedOut` (`actionMsg.leftJob`). A stamp
+    only moves forward. An attach from another terminal that starts and ends
+    between two polls is never seen at all.
   - *Watch floor*: cav knows who was attached only while it was polling, so
     idle time from before its unbroken watch does not count. `keepWatch` moves
     the floor forward when a cav starts, when two refreshes are further apart
-    than `list.idleRefreshMs` + 30s (a suspended cav, a laptop sleep), when the
-    process scan fails, and when a refresh is **stale**: every result carries
+    than `list.idleRefreshMs` + 30s (a suspended cav, a laptop sleep), when a
+    refresh **cannot tell** (`watchedJobs` gives no attached set: `claude
+    agents` failed, so there are no statuses, the process scan failed, or an
+    agents view is open; the header then shows `auto-stop paused: <reason>`
+    from `m.watchErr`), and when a refresh is **stale**: every result carries
     `at` (when `claude agents` returned, so it dates the statuses) and one
     handled more than `autoStopMaxAge` (5s, plus `list.minRefreshMs`) later is
     ignored. That happens because the refresh
@@ -473,8 +481,12 @@ visible at a glance.
     `claude attach` takes a job id **or part of a session name**, so the scan
     returns targets, not job ids. An 8-hex id that follows `attach` on the same
     line counts from any binary, with any flags around it (the shell alias adds
-    `--model …`). A name counts only when the command runs claude: the text
-    after `attach` and its first word. `pgrep -fl` prints one process over
+    `--model …`). A name counts only when the command runs claude
+    (`claudeArgs`: the program is known by its **base name**, `claude` or
+    `cli.js` in a claude-code package, among the first few words, so a script
+    that only lives under `~/.claude` is not claude): the text after `attach`,
+    its first word, and every word when flags stand among them (`attach
+    --model fable <name>`). `pgrep -fl` prints one process over
     several lines when an argument holds a newline (cav's own attach wrapper is
     about 25 lines), so ids are read per line and names per process
     (`splitProcs`). `attachedJobs` maps targets to jobs (`targetsJob`: the
@@ -487,20 +499,32 @@ visible at a glance.
     subcommand is `agents` (only flags and their values before it) without
     `--json` (that form only prints the list, as cav's own poll does). While
     one runs, `AttachTargets` returns `ErrAgentsView`: nothing is stopped, the
-    header shows `auto-stop paused: a claude agents view is open`
-    (`m.attachErr`, also shown for a failed scan), and closing the view starts
-    every session's window again. A forgotten agents view keeps auto-stop
-    paused: that is the price of not stopping a session someone is reading.
+    header says so, and closing the view starts every session's window again.
+    A forgotten agents view keeps auto-stop paused: that is the price of not
+    stopping a session someone is reading. Two more cases:
+    - Stepping out of an attach with `←` turns the attach process into
+      `claude agents` for a moment, until cav's watchdog ends it. So a view
+      counts only if it is still there on a second look `agentsViewSettle`
+      (0.5s) later.
+    - `←` in a **plain interactive claude** parks that conversation as a job
+      and opens the view **inside the same process**: the command line shows
+      nothing. Meanwhile the process keeps `parkedJobId` in its record
+      `~/.claude/sessions/<pid>.json` (read in the CLI's code, 2.1.332; not
+      yet confirmed live). `parkedView` treats such a record of a live
+      process as an open view.
   - *In flight* = `state.json`'s `inFlight.tasks` (background shells,
     subagents, monitors and scheduled wakeups, all verified). `inFlight.queued`
     is **not** counted: it rests above zero on sessions that do nothing. A
-    record with no `inFlight.tasks` (`InFlightKnown` false; 1 of 26 records
-    here) says nothing about background work, so that session is never
-    stopped. The count can be **left over**: finished in-process teammates
+    record with no `inFlight.tasks`, or with one in a shape cav does not know
+    (`InFlightKnown` false; 1 of 26 records here), says nothing about
+    background work, so that session is never stopped. The field is parsed
+    apart from the rest, so an odd shape costs only the count, not the record.
+    The count can be **left over**: finished in-process teammates
     stay in it, and a record can keep a count from a process that is gone.
     cav cannot tell that from real work, so it never stops on a count above
     zero, and the row shows why (`autoStopHint`: `N tasks` after the age,
-    only with auto-stop on).
+    only with auto-stop on). The name column gives up width for the hint
+    (`hintWidth`), and a row too narrow for the whole hint leaves it out.
   A stop is issued once per job: `m.autoStopping` blocks a repeat for
   `autoStopRetry` (1 min). Right before the stop `autoStopCmd` checks the
   target again (`recheck`): the job record must be unchanged since the
@@ -513,8 +537,10 @@ visible at a glance.
   (`Store.Mark` tells whether the mark is new, judged from the file under the
   lock). The mark goes only when a refresh taken **after** the round still
   shows the worker (`m.unmarkPending`, `settleUnmarks`): if `x`, `z` or
-  another cav stopped the session meanwhile, the mark is what keeps it in the
-  main pane. A mark from before the round stays, and so does the mark of a
+  another cav stopped the session meanwhile (state `stopped`), the mark is
+  what keeps it in the main pane. A refresh that shows neither settles
+  nothing, for up to a minute: the list can miss a worker for a poll.
+  A mark from before the round stays, and so does the mark of a
   failed stop, which may still land. A job another cav already stopped is
   left with its mark. When the mark cannot be saved, nothing is stopped
   (`Store.update` puts the in-memory set back, so the next refresh fails the

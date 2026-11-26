@@ -32,7 +32,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.worktrees = msg.worktrees
 		m.states = msg.states
 		m.live = msg.live
-		m.workers, m.attached, m.attachErr = msg.workers, msg.attached, msg.attachErr
+		m.workers, m.attached, m.watchErr = msg.workers, msg.attached, msg.watchErr
 		m.unparked.Reload() // another cav may have stopped sessions and marked them to stay here
 		m.settleUnmarks(msg.at)
 		// First refresh: fold the tree if configured, then make sure the launch
@@ -650,7 +650,7 @@ func (m *Model) openCurrent() tea.Cmd {
 	// back-note. Highlight-on-appear (selectJobID) stays for create/fork/clone,
 	// which target new sessions rather than a step-out.
 	return tea.ExecProcess(cmd, func(error) tea.Msg {
-		return actionMsg{note: note, leftJob: id}
+		return steppedOut(note, id)
 	})
 }
 
@@ -688,7 +688,7 @@ func (m *Model) popupAttachCmd(jobID, title, note string, live bool) tea.Cmd {
 			return actionMsg{err: fmt.Errorf("tmux popup: %v: %s (popups can't nest; set attach.tmuxStyle to \"switch\" if cav runs inside one)",
 				err, strings.TrimSpace(string(out)))}
 		}
-		return actionMsg{note: note, leftJob: jobID}
+		return steppedOut(note, jobID)
 	}
 }
 
@@ -767,7 +767,7 @@ func watchPaneCmd(paneID, jobID, note string) tea.Cmd {
 		for {
 			out, err := exec.Command("tmux", "display", "-p", "-t", paneID, "#{pane_id}").Output()
 			if err != nil || strings.TrimSpace(string(out)) != paneID {
-				return actionMsg{note: note, leftJob: jobID}
+				return steppedOut(note, jobID)
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -823,7 +823,7 @@ func watchScratchCmd(name, jobID, note string) tea.Cmd {
 	return func() tea.Msg {
 		for {
 			if err := exec.Command("tmux", "has-session", "-t", name).Run(); err != nil {
-				return actionMsg{note: note, leftJob: jobID}
+				return steppedOut(note, jobID)
 			}
 			time.Sleep(500 * time.Millisecond)
 		}

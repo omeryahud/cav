@@ -27,12 +27,14 @@ func autoStopModel(t *testing.T, now time.Time, names ...string) *Model {
 	m.cfg.AutoStop.After = testAfter
 	m.roster = claude.Roster{}
 	m.workers = map[string]workerActivity{}
+	m.hadWorker = map[string]bool{}
 	for i := range m.all {
 		s := &m.all[i]
 		s.Status = "idle"
 		s.JobID = strings.Repeat(s.SessionID[:1], 4) + "0001"
 		m.roster[s.SessionID] = s.JobID
 		m.workers[s.SessionID] = workerActivity{last: now.Add(-10 * time.Minute)}
+		m.hadWorker[s.JobID] = true
 	}
 	m.attached = map[string]bool{}
 	m.lastWatch = now.Add(-time.Second)
@@ -650,17 +652,22 @@ func TestAutoStopCmdStopsNothingWhenItCannotTell(t *testing.T) {
 // A target found in use at stop time keeps running, so it must lose the mark
 // the round gave it. The mark goes only when a refresh taken after the round
 // still shows the worker: a session that x, z or another cav stopped meanwhile
-// needs the mark to stay in the main pane.
+// needs the mark to stay in the main pane. A refresh that shows neither a
+// worker nor a stop settles nothing: the list can miss a worker for a poll.
 func TestARoundThatLeavesItsTargetRunningSettlesTheMarkLater(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		markedByIt bool
-		stillLive  bool
-		wantMark   bool
+		name        string
+		markedByIt  bool
+		then        func(m *Model) // what the refresh after the round shows
+		wantMark    bool
+		wantSettled bool
 	}{
-		{"the round's own mark, worker still there", true, true, false},
-		{"the round's own mark, worker gone", true, false, true},
-		{"a mark from before the round", false, true, true},
+		{"the round's own mark, worker still there", true, func(*Model) {}, false, true},
+		{"the round's own mark, stopped meanwhile", true, func(m *Model) {
+			m.all[0].Status, m.states["a-sid"] = "", "stopped"
+		}, true, true},
+		{"the round's own mark, worker missing from one listing", true, func(m *Model) { m.all[0].Status = "" }, true, false},
+		{"a mark from before the round", false, func(*Model) {}, true, true},
 	} {
 		m := autoStopModel(t, time.Now())
 		if err := m.unparked.Add("a-sid"); err != nil {
@@ -681,14 +688,131 @@ func TestARoundThatLeavesItsTargetRunningSettlesTheMarkLater(t *testing.T) {
 			t.Errorf("%s: a refresh from before the end of the round must not settle the mark", tc.name)
 		}
 
-		if !tc.stillLive {
-			m.all[0].Status = ""
-		}
+		tc.then(m)
 		time.Sleep(5 * time.Millisecond)
 		m.Update(refreshOf(m))
 		if got := m.unparked.Has("a-sid"); got != tc.wantMark {
 			t.Errorf("%s: mark after the next refresh = %v, want %v", tc.name, got, tc.wantMark)
 		}
+		if settled := len(m.unmarkPending) == 0; settled != tc.wantSettled {
+			t.Errorf("%s: settled = %v, want %v", tc.name, settled, tc.wantSettled)
+		}
+	}
+}
+
+// The listing missed the worker for one poll and shows it again: the mark the
+// round gave must still go.
+func TestAMarkWaitsForAListingThatMissedTheWorker(t *testing.T) {
+	m := autoStopModel(t, time.Now())
+	if err := m.unparked.Add("a-sid"); err != nil {
+		t.Fatal(err)
+	}
+	m.autoStopping["aaaa0001"] = time.Now()
+	m.Update(autoStoppedMsg{target: stopTarget{sessionID: "a-sid", jobID: "aaaa0001", marked: true}, outcome: inUse})
+
+	time.Sleep(5 * time.Millisecond)
+	m.all[0].Status = "" // one listing without the worker
+	m.Update(refreshOf(m))
+	m.all[0].Status = "busy" // it is back
+	m.Update(refreshOf(m))
+
+	if m.unparked.Has("a-sid") || len(m.unmarkPending) != 0 {
+		t.Errorf("mark = %v, pending = %v; want the mark gone once the worker shows again", m.unparked.Has("a-sid"), m.unmarkPending)
+	}
+}
+
+// When `claude agents` fails, cav has no statuses: a session can be busy with
+// a record that holds still. Such a refresh is one cav did not watch. Nothing
+// is stopped from it, the header says why, and the idle window starts again
+// after it.
+func TestAFailedListingIsNotWatchedTime(t *testing.T) {
+	start := time.Now()
+	m := autoStopModel(t, start)
+	m.all[0].Status = "busy"
+	m.autoStopIdle(start, start)
+
+	// The listing fails for longer than the idle window. The session comes
+	// from its on-disk record, with no status.
+	m.all[0].Status = ""
+	m.attached, m.watchErr = nil, errListFailed
+	var last time.Time
+	for i := 1; i <= 31; i++ {
+		last = start.Add(time.Duration(i) * 10 * time.Second)
+		if cmd := m.autoStopIdle(last, last); cmd != nil {
+			t.Fatal("nothing may be stopped while the listing fails")
+		}
+	}
+	if got := m.indicators(); !strings.Contains(got, "auto-stop paused: claude cannot list the sessions") {
+		t.Errorf("header = %q, want the reason for the pause", got)
+	}
+
+	// The first good listing shows the session idle.
+	m.all[0].Status = "idle"
+	m.attached, m.watchErr = map[string]bool{}, nil
+	back := last.Add(10 * time.Second)
+	if cmd := m.autoStopIdle(back, back); cmd != nil {
+		t.Error("the session was not watched during the outage: it needs a full window first")
+	}
+	due := back.Add(testAfter + 10*time.Second)
+	m.lastWatch = due.Add(-time.Second)
+	if cmd := m.autoStopIdle(due, due); cmd == nil {
+		t.Error("the session should be stopped a full window after the listing came back")
+	}
+}
+
+// A listing can also succeed and still miss a worker for a poll (the daemon is
+// restarting). A worker that shows again was not watched meanwhile.
+func TestAWorkerThatShowsAgainGetsAFreshWindow(t *testing.T) {
+	now := time.Now()
+	m := autoStopModel(t, now)
+	m.all[0].Status = "" // this poll does not show the worker
+	if cmd := m.autoStopIdle(now, now); cmd != nil {
+		t.Fatal("setup: no worker, no stop")
+	}
+
+	m.all[0].Status = "idle"
+	back := now.Add(time.Second)
+	if cmd := m.autoStopIdle(back, back); cmd != nil {
+		t.Error("a worker that just showed again must not be stopped at once")
+	}
+	watched := back.Add(10 * time.Second) // the first poll that watched it all the way
+	if cmd := m.autoStopIdle(watched, watched); cmd != nil {
+		t.Error("ten seconds are not a full window")
+	}
+	due := watched.Add(testAfter)
+	m.lastWatch = due.Add(-time.Second)
+	if cmd := m.autoStopIdle(due, due); cmd == nil {
+		t.Error("it should be stopped after a full window")
+	}
+}
+
+// The checks before a stop run from cheap to costly, and the process scan runs
+// last so it is the freshest. A record that already rules the stop out must
+// not cost a `claude agents` call.
+func TestRecheckOrder(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seen := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	writeJobState(t, home, "aaaa0001", `{"state":"working","updatedAt":"2026-01-01T12:00:00Z","inFlight":{"tasks":0}}`)
+	writeJobState(t, home, "busy0000", `{"state":"working","updatedAt":"2026-01-01T12:00:00Z","inFlight":{"tasks":2}}`)
+
+	var calls []string
+	origList, origScan := liveSessions, attachTargets
+	t.Cleanup(func() { liveSessions, attachTargets = origList, origScan })
+	liveSessions = func(context.Context) ([]claude.Session, error) {
+		calls = append(calls, "list")
+		return []claude.Session{{SessionID: "a-sid", JobID: "aaaa0001", Status: "idle"}}, nil
+	}
+	attachTargets = func() ([]string, error) {
+		calls = append(calls, "scan")
+		return nil, nil
+	}
+
+	if got := recheck(stopTarget{sessionID: "b-sid", jobID: "busy0000", updated: seen}); got != inUse || len(calls) != 0 {
+		t.Errorf("a record with work in flight: outcome %d after calls %v, want in use with no calls", got, calls)
+	}
+	if got := recheck(stopTarget{sessionID: "a-sid", jobID: "aaaa0001", updated: seen}); got != stillIdle || strings.Join(calls, ",") != "list,scan" {
+		t.Errorf("an idle target: outcome %d after calls %v, want still idle after list then scan", got, calls)
 	}
 }
 
@@ -722,7 +846,7 @@ func TestDoRefreshFeedsAutoStop(t *testing.T) {
 	const rec = `{"sessionId":"a-sid","state":"working","updatedAt":"2026-01-01T12:00:00Z","inFlight":{"tasks":0}}`
 	writeJobState(t, home, "0000aaaa", rec) // an older job whose record still names this session
 	writeJobState(t, home, "aaaa0001", rec)
-	stubLiveSessions(t, []claude.Session{{SessionID: "a-sid", JobID: "aaaa0001", Kind: "background", Name: "hermes", Status: "idle"}}, nil)
+	listed := []claude.Session{{SessionID: "a-sid", JobID: "aaaa0001", Kind: "background", Name: "hermes", Status: "idle"}}
 
 	for _, tc := range []struct {
 		name     string
@@ -737,6 +861,7 @@ func TestDoRefreshFeedsAutoStop(t *testing.T) {
 		{"the scan fails", true, nil, false, true, false},
 		{"auto-stop off", false, []string{"herm"}, true, true, false},
 	} {
+		stubLiveSessions(t, listed, nil)
 		stubAttachTargets(t, tc.targets, tc.scanOK)
 		before := time.Now()
 		rr := doRefresh("", tc.watch)
@@ -747,8 +872,8 @@ func TestDoRefreshFeedsAutoStop(t *testing.T) {
 		if (rr.attached == nil) != tc.wantNil || rr.attached["aaaa0001"] != tc.attached {
 			t.Errorf("%s: attached = %v", tc.name, rr.attached)
 		}
-		if wantErr := tc.watch && !tc.scanOK; (rr.attachErr != nil) != wantErr {
-			t.Errorf("%s: attachErr = %v, want an error only when a wanted scan fails", tc.name, rr.attachErr)
+		if wantErr := tc.watch && !tc.scanOK; (rr.watchErr != nil) != wantErr {
+			t.Errorf("%s: watchErr = %v, want an error only when a wanted scan fails", tc.name, rr.watchErr)
 		}
 		if rr.at != rr.at.Round(0) {
 			t.Errorf("%s: at carries a monotonic reading", tc.name)
@@ -760,6 +885,16 @@ func TestDoRefreshFeedsAutoStop(t *testing.T) {
 			t.Errorf("%s: workers = %v, want the live session's activity", tc.name, rr.workers)
 		}
 	}
+
+	// A failed listing: the sessions still come from the on-disk records, but
+	// the refresh must say it cannot tell, even though the process scan works.
+	stubLiveSessions(t, nil, errors.New("daemon down"))
+	stubAttachTargets(t, nil, true)
+	rr := doRefresh("", true)
+	if rr.attached != nil || !errors.Is(rr.watchErr, errListFailed) || len(rr.sessions) == 0 {
+		t.Errorf("a failed listing: attached = %v, watchErr = %v, sessions = %d; want nil, the list error, and the on-disk sessions",
+			rr.attached, rr.watchErr, len(rr.sessions))
+	}
 }
 
 // While a native agents view is open cav cannot tell which session it shows.
@@ -769,7 +904,7 @@ func TestAnOpenAgentsViewPausesAutoStop(t *testing.T) {
 	m := autoStopModel(t, time.Now())
 	refresh := func(attached map[string]bool, err error) {
 		rr := refreshOf(m)
-		rr.attached, rr.attachErr = attached, err
+		rr.attached, rr.watchErr = attached, err
 		m.Update(rr)
 	}
 
@@ -848,6 +983,41 @@ func TestTheRowSaysWhyAnIdleSessionIsKept(t *testing.T) {
 	m.cfg.AutoStop.After = 0
 	if strings.Contains(row(), "tasks") {
 		t.Errorf("with auto-stop off the row must not change: %q", row())
+	}
+}
+
+// The hint needs room after the age. Rows give up name width for it, and a
+// row too narrow for the whole hint leaves it out: it must never be cut short
+// or cut into the age.
+func TestTheRowHintNeverCutsTheAge(t *testing.T) {
+	for _, preview := range []bool{false, true} {
+		m := autoStopModel(t, time.Now())
+		m.all[0].Name = strings.Repeat("n", 70)
+		m.all[0].StartedAt = time.Now().Add(-3 * time.Hour).UnixMilli()
+		m.workers["a-sid"] = workerActivity{inFlight: 3}
+		m.live["a-sid"] = true
+		m.previewOn, m.width = preview, 300
+		m.recompute()
+
+		for width := 36; width <= 130; width++ { // 36 is the narrowest row that holds a name and the age
+			row := m.rowLine(m.view[0], false, true, width)
+			if !strings.Contains(row, " 3h") {
+				t.Fatalf("preview %v, width %d: the age is cut: %q", preview, width, row)
+			}
+			whole := strings.Contains(row, "  3 tasks")
+			if strings.Contains(row, "task") != whole {
+				t.Fatalf("preview %v, width %d: the hint is cut short: %q", preview, width, row)
+			}
+			if width >= 60 && !whole {
+				t.Fatalf("preview %v, width %d: there is room for the hint: %q", preview, width, row)
+			}
+		}
+	}
+}
+
+func TestSteppedOutNamesTheJobThatWasLeft(t *testing.T) {
+	if msg := steppedOut("← back", "aaaa0001"); msg.note != "← back" || msg.leftJob != "aaaa0001" || msg.selectJob != "" {
+		t.Errorf("steppedOut = %+v", msg)
 	}
 }
 
