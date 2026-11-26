@@ -105,6 +105,7 @@ type List struct {
 	MinRefresh     time.Duration // floor between refreshes, guards a hot spin
 	IdleAfter      time.Duration // no keypress for this long -> idle backoff (0 disables)
 	IdleRefresh    time.Duration // poll interval while idle (any key wakes instantly)
+	SafetyPoll     time.Duration // with file events: how often `claude agents` still runs as a cross-check
 	Grouping       string        // startup grouping: dir-status | status-dir | recent | alphabetical
 	FuzzyFilter    bool          // / also matches by subsequence (fuzzy), not just substring
 }
@@ -185,6 +186,7 @@ func Defaults() Config {
 			MinRefresh:     250 * time.Millisecond,
 			IdleAfter:      60 * time.Second,
 			IdleRefresh:    10 * time.Second,
+			SafetyPoll:     time.Minute,
 			Grouping:       "status-dir",
 			FuzzyFilter:    true,
 		},
@@ -251,6 +253,7 @@ type listFile struct {
 	MinRefreshMs   *int    `json:"minRefreshMs"`
 	IdleAfterMs    *int    `json:"idleAfterMs"`
 	IdleRefreshMs  *int    `json:"idleRefreshMs"`
+	SafetyPollMs   *int    `json:"safetyPollMs"`
 	Grouping       *string `json:"grouping"`
 	FuzzyFilter    *bool   `json:"fuzzyFilter"`
 }
@@ -526,6 +529,7 @@ func (l *loader) applyList(dst *List, c *listFile) {
 		l.setMs(&dst.IdleAfter, c.IdleAfterMs, "list.idleAfterMs", 5000)
 	}
 	l.setMs(&dst.IdleRefresh, c.IdleRefreshMs, "list.idleRefreshMs", 1000)
+	l.setMs(&dst.SafetyPoll, c.SafetyPollMs, "list.safetyPollMs", 5000)
 	if c.FuzzyFilter != nil {
 		dst.FuzzyFilter = *c.FuzzyFilter
 	}

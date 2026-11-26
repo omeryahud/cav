@@ -43,12 +43,19 @@ after.
   - `client.go` — `List`, `Stop`, `Create`, `AttachCmd`, `ResumeAttachCmd`,
     `LogsShellCmd`, `Logs`, `Roster`/`LoadRoster`/`JobID`, `JobState`,
     `JobRecord`/`ScanJobs`.
+  - `sessions.go`: `LiveSessions`/`LiveSession`, the live workers read from
+    claude's process records with no CLI call.
+  - `watch.go`: `Watcher`, file events (fsnotify) on the files cav reads.
+  - `attached.go`: `AttachTargets`, the process scan auto-stop uses.
   - `git.go` — git worktree access for the directory tree (`RepoRoot`,
     `Worktrees`, `DefaultBranch`, `AddWorktree`, `RemoveWorktree`).
 - `internal/ui/` — the Bubble Tea app.
   - `model.go` — `Model`, messages, commands (incl. the `doRefresh` merge run by
     the background `refreshLoop`), the `statusOf`/`statusRank`/`bucketLabel`
     status model, and filter/sort helpers.
+  - `source.go`: `sessionSource`, which decides when a refresh must start
+    `claude agents` and when the process records are enough.
+  - `autostop.go`: auto-stop (see **Auto-stop**).
   - `update.go` — `Update` + per-mode key handlers.
   - `view.go` — layout + rendering, Lip Gloss styles, and `renderSnippets`
     (markdown → ANSI via glamour).
@@ -70,7 +77,7 @@ after.
 
 ## How sessions are sourced (the critical knowledge)
 
-There are **three** data sources, and they disagree — getting this right was the
+There are **four** data sources, and they disagree — getting this right was the
 bulk of the work. Don't "simplify" back to a single source.
 
 1. **`claude agents --json`** — *live daemon workers only*. Fields per element:
@@ -101,24 +108,53 @@ bulk of the work. Don't "simplify" back to a single source.
    the **current** `sessionId`. This is the authoritative live
    `sessionId → jobId` mapping, *especially after a branch/fork* where (2) lags.
 
+4. **`~/.claude/sessions/<pid>.json`**: the record every claude process keeps of
+   itself. For a background worker (`kind: "bg"`, not `spare`) it holds
+   `pid, procStart, jobId, sessionId, cwd, name, startedAt, status,
+   statusUpdatedAt`: the same fields `agents --json` prints for a live worker
+   (compared on real data), plus **when the status last changed**.
+   `claude.LiveSessions` reads them (`status: "shell"` is listed as `busy`; a
+   record whose pid is gone or was reused is skipped, the `ps` check runs once
+   per process). ⚠️ These files are internal to claude, not a documented
+   interface: an unknown shape makes `LiveSessions` report `ok = false` and cav
+   goes back to the CLI.
+
 **`attach` / `stop` / `logs` key on the JOB ID** (the short id = jobs/ dir name =
 roster worker key), **NOT the full session UUID**. They coincide for most
 sessions but differ after branch/respawn (e.g. session `72cdfc0f` ↔ job
 `cc12801d`). Passing the session id yields `No job matching ...`.
 
-`doRefresh` (in `model.go`) merges them. It runs **continuously in a background
-goroutine** (`refreshLoop`) — no fixed poll delay, so the list updates as fast as
-a refresh completes (~0.5s, bounded by `claude agents --json`; a small `minRefresh`
-floor only guards against a hot spin if a refresh returns instantly). Results flow
-to the update loop via a channel (`waitRefresh`), which re-arms itself each time.
-**Idle backoff:** each `agents --json` spawn costs ~0.5 CPU-s, so a forgotten cav
-polling at full rate burns real power (19 stale instances ≈ several cores,
-measured). After `list.idleAfterMs` (60s) without a keypress, the loop naps
-`list.idleRefreshMs` (10s) between polls (`idleDelay`/`activity` in `model.go`;
-every keypress stamps `act.touch()`, which also wakes an in-progress nap through
-a buffered channel — drained-and-rechecked to dodge the stamp/token race). The
-header shows `zzz` while napping and "N other cavs running" (`countOtherCavs`,
-a per-refresh `pgrep -x cav`) so stale instances get noticed and quit.
+`doRefresh` (in `model.go`) merges them in a background goroutine
+(`refreshLoop`); results flow to the update loop via a channel (`waitRefresh`),
+which re-arms itself each time. **A refresh is driven by file events, not by a
+timer** (`claude.Watcher`, fsnotify/kqueue on `sessions/`, `daemon/` (the
+roster and the attach journal), `jobs/`, and the job directories of the live
+workers only, to keep the open files few): cav sleeps until claude changes a
+file it reads, `r` is pressed, or `eventInterval` passes (`list.safetyPollMs`,
+60s; `list.idleRefreshMs`, 10s, when auto-stop is on, because an attach leaves
+no file and auto-stop needs a steady scan). A keypress alone starts no refresh.
+
+**Why:** one `claude agents --json` costs about 2.5s, 0.35 CPU-s and 164 MB of
+peak memory (measured), and the old loop started one on every refresh, back to
+back while the user typed. `sessionSource` (`source.go`) now starts it only
+when it must: at the first refresh, when the worker set changes (a worker
+started or ended), on `r`, and once per `list.safetyPollMs` as a cross-check.
+Between those, the live workers come from the process records and
+`mergeListing` keeps the last listing's order and its entries with no process
+(the daemon lists sessions that have none). A listing that fails keeps the
+previous one and is not retried until the next safety interval. Measured on
+this machine: one `claude` start in 80s, where the polling build started one
+per refresh. A one-second UI tick (`tickMsg`, only while a footer note shows or
+the preview is open) expires the note and reloads the preview, which a refresh
+used to do.
+
+**Fallback (no process records, older claude):** the loop polls as before:
+back to back while the user is active, and after `list.idleAfterMs` (60s)
+without a keypress it naps `list.idleRefreshMs` (10s) between polls
+(`idleDelay`/`activity`; every keypress stamps `act.touch()`, which wakes a nap
+through a buffered channel, drained-and-rechecked to dodge the stamp/token
+race). The header shows `zzz` while napping (polling mode only). It always
+shows "N other cavs running" (`countOtherCavs`, a per-refresh `pgrep -x cav`).
 The merge:
 1. List live sessions; build `sessionId → jobId`. Newer claude gives the job id
    in the listing itself (`id`, `Session.JobID`): that wins. Without it, use
@@ -443,19 +479,19 @@ visible at a glance.
   on-disk records can belong to another session when two records share a
   session id). A session waiting for input counts as idle, on purpose. The
   inputs:
-  - *Last use* (`idleSince`) = the latest of `state.json`'s `updatedAt`
-    (it holds still while a session idles; it can also hold still through a
-    whole long turn, so it is not enough alone), the worker's start (a wake
-    resets the clock), the last time cav saw the job **in use**
-    (`lastInUse`), and the **watch floor** (`floor`). A record
-    with no parsable `updatedAt` is never stopped.
-  - *In use* (`stampInUse`, `markInUse`): a terminal is attached, the worker
-    is not idle, it runs background work, or the previous refresh did not
-    show the worker at all (`hadWorker`: the list can miss a worker for a
-    poll, and a worker cav did not see was not watched). cav sees these only
-    by polling, and what it sees end ended somewhere between two polls, so a
+  - *Last use* (`idleSince`) = the latest of **when the worker became idle**
+    (`Session.StatusSince`, from its process record: exact, with no polling;
+    a session without it, listed by the CLI on an older claude, is never
+    stopped), `state.json`'s `updatedAt` (it can hold still through a whole
+    long turn, so it is not enough alone), the worker's start (a wake resets
+    the clock), the last time cav saw the job **in use** (`lastInUse`), and
+    the **watch floor** (`floor`). A record with no parsable `updatedAt` is
+    never stopped.
+  - *In use* (`stampInUse`, `markInUse`): a terminal is attached, or the job
+    runs background work. No file tells when those end, only a scan does, and
+    what a scan sees end ended somewhere before it, so a
     job in use now **or at the previous refresh** (`wasInUse`) is stamped
-    with the handling time. The window therefore runs from the first poll
+    with the handling time. The window therefore runs from the first refresh
     that sees the job free: a poll too long, never too short. cav's own flows
     stamp exactly: `openCurrent` on open, every exit path (attach end,
     popup, pane, scratch) through `steppedOut` (`actionMsg.leftJob`), and a
@@ -543,11 +579,13 @@ visible at a glance.
   A round is started once per job: `stopping` blocks a repeat for
   `autoStopRetry` (1 min). Right before the stop `autoStopCmd` checks the
   target again (`recheck`): the job record must be unchanged since the
-  refresh (same `updatedAt`, nothing in flight), a fresh `claude agents` must
-  still list the same worker (same `startedAt`, same job id) as `idle`, and a
-  fresh process scan must show no attach. The status is asked again because
-  the record lags: a session was seen `busy` for ten minutes with an
-  unchanged record. Only when the check passes does `stopInPlace` save the
+  refresh (same `updatedAt`, nothing in flight), the worker's own process
+  record must still say the same worker (`startedAt`, session id) is `idle`
+  since the same moment (`listedIdle`, a file read: it starts no claude, so a
+  slow machine cannot time it out), and a fresh process scan must show no
+  attach. The worker's record is read again because the job record lags: a
+  session was seen `busy` for ten minutes with an unchanged job record.
+  Only when the check passes does `stopInPlace` save the
   `unparked` mark, through its own `unpark.Load()` store (the file lock makes
   that safe), and then stop the worker: so a target left running never gets a
   mark, and a mark that cannot be saved means no stop. The model picks the
@@ -614,7 +652,8 @@ visible at a glance.
   directly while `tab` just confirms the filter and stays in the list (shift+enter
   isn't detectable in bubbletea v1), and it starts empty each time — or run
   `cav <term>` on the CLI to open with the filter already applied) · `f` search
-  (transcript content) · `esc` clear · `r` refresh · `q` quit.
+  (transcript content) · `esc` clear · `r` refresh now (a full one, with
+  `claude agents`) · `q` quit.
 - **CLI:** `cav` (everything) · `cav <term>` (pre-filtered) · `cav -o <name>`
   (`--open`: resolve `<name>` against display names — renames included,
   case-insensitive; exact match, else unique prefix, else unique substring
@@ -658,9 +697,10 @@ visible at a glance.
   | `list.nameColMax` | 50 | name-column cap **when the preview is on** (off = fit the longest name) |
   | `list.nameColReserve` | 18 | columns kept for the status/age columns |
   | `list.statusTTLMs` | 6000 | how long a footer note lingers |
-  | `list.minRefreshMs` | 250 | floor between refreshes (guards a hot spin) |
-  | `list.idleAfterMs` | 60000 | no keypress for this long → idle poll backoff (0 disables) |
-  | `list.idleRefreshMs` | 10000 | poll interval while idle; any key wakes instantly (`zzz` shows in the header) |
+  | `list.minRefreshMs` | 250 | floor between refreshes (merges a burst of file events, guards a hot spin) |
+  | `list.safetyPollMs` | 60000 | event mode: how often `claude agents` still runs as a cross-check, and the longest wait between refreshes (min 5000) |
+  | `list.idleAfterMs` | 60000 | polling mode only (no process records): no keypress for this long → idle poll backoff (0 disables) |
+  | `list.idleRefreshMs` | 10000 | polling mode: poll interval while idle (`zzz` in the header). Event mode: the longest wait between refreshes while auto-stop is on |
   | `list.grouping` | `status-dir` | startup grouping: `dir-status`\|`status-dir`\|`recent`\|`alphabetical` (`o` cycles from there) |
   | `list.fuzzyFilter` | `true` | `/` also matches by subsequence (fuzzy); `false` = substring only |
   | `picker.maxDepth` | 8 | how deep the dir-picker walk descends |

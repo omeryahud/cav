@@ -27,14 +27,12 @@ func autoStopModel(t *testing.T, now time.Time, names ...string) *Model {
 	m.cfg.AutoStop.After = testAfter
 	m.roster = claude.Roster{}
 	m.auto.workers = map[string]workerActivity{}
-	m.auto.hadWorker = map[string]bool{}
 	for i := range m.all {
 		s := &m.all[i]
-		s.Status = "idle"
+		s.Status, s.StatusSince = "idle", now.Add(-10*time.Minute).UnixMilli()
 		s.JobID = strings.Repeat(s.SessionID[:1], 4) + "0001"
 		m.roster[s.SessionID] = s.JobID
 		m.auto.workers[s.SessionID] = workerActivity{last: now.Add(-10 * time.Minute)}
-		m.auto.hadWorker[s.JobID] = true
 	}
 	m.auto.attached = map[string]bool{}
 	m.auto.lastWatch = now.Add(-time.Second)
@@ -65,12 +63,30 @@ func stubAttachTargets(t *testing.T, targets []string, ok bool) {
 	t.Cleanup(func() { attachTargets = orig })
 }
 
-// stubLiveSessions replaces the `claude agents` call.
-func stubLiveSessions(t *testing.T, sessions []claude.Session, err error) {
+// stubLiveSessions replaces the `claude agents` call and counts its runs.
+func stubLiveSessions(t *testing.T, sessions []claude.Session, err error) (calls *int) {
 	t.Helper()
 	orig := liveSessions
-	liveSessions = func(context.Context) ([]claude.Session, error) { return sessions, err }
+	calls = new(int)
+	liveSessions = func(context.Context) ([]claude.Session, error) { *calls++; return sessions, err }
 	t.Cleanup(func() { liveSessions = orig })
+	return calls
+}
+
+// stubLiveRecords replaces the readers of claude's process records. ok false
+// stands for records that cannot be relied on.
+func stubLiveRecords(t *testing.T, workers []claude.Session, ok bool) {
+	t.Helper()
+	origAll, origOne := liveRecords, liveRecord
+	liveRecords = func() ([]claude.Session, bool) { return workers, ok }
+	liveRecord = func(jobID string) (claude.Session, bool) {
+		i := slices.IndexFunc(workers, func(s claude.Session) bool { return s.JobID == jobID })
+		if !ok || i < 0 {
+			return claude.Session{}, false
+		}
+		return workers[i], true
+	}
+	t.Cleanup(func() { liveRecords, liveRecord = origAll, origOne })
 }
 
 func TestAutoStopTargetsRules(t *testing.T) {
@@ -108,6 +124,12 @@ func TestAutoStopTargetsRules(t *testing.T) {
 		{"cav started watching a minute ago", func(m *Model) {
 			m.auto.floor = now.Add(-time.Minute)
 		}, 0},
+		{"became idle a minute ago, whatever the job record says", func(m *Model) {
+			m.all[0].StatusSince = now.Add(-time.Minute).UnixMilli()
+		}, 0},
+		{"no idle-since time (listed by the CLI, not read from its record)", func(m *Model) {
+			m.all[0].StatusSince = 0
+		}, 0},
 		{"removed with d a moment ago", func(m *Model) { m.justStopped["a-sid"] = true }, 0},
 		{"claude gave no job id for the worker", func(m *Model) { m.all[0].JobID = "" }, 0},
 		{"the job id is only a guess from the records", func(m *Model) { m.all[0].JobID = "ffff0009" }, 0},
@@ -127,7 +149,7 @@ func quietJob(t *testing.T, m *Model, attachTargets ...string) (callLog string) 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeJobState(t, home, "aaaa0001", `{"state":"working","inFlight":{"tasks":0}}`)
-	stubLiveSessions(t, slices.Clone(m.all), nil)
+	stubLiveRecords(t, slices.Clone(m.all), true)
 	stubAttachTargets(t, attachTargets, true)
 	return fakeClaude(t)
 }
@@ -208,8 +230,8 @@ func TestAutoStopIdleGivesASteppedOutSessionAFreshWindow(t *testing.T) {
 	}
 }
 
-// What cav sees only by polling ends between two polls. The window must run
-// from the first poll that sees the session free, whatever the job record says.
+// What only a scan sees ends between two scans. The window must run from the
+// first refresh that sees the session free, not the last that saw it in use.
 func TestAutoStopIdleDatesTheEndOfUseAtThePollThatSeesItFree(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -219,9 +241,6 @@ func TestAutoStopIdleDatesTheEndOfUseAtThePollThatSeesItFree(t *testing.T) {
 		{"an attach from another terminal",
 			func(m *Model) { m.auto.attached["aaaa0001"] = true },
 			func(m *Model) { m.auto.attached = map[string]bool{} }},
-		{"a busy worker with a record that held still",
-			func(m *Model) { m.all[0].Status = "busy" },
-			func(m *Model) { m.all[0].Status = "idle" }},
 		{"background work",
 			func(m *Model) {
 				m.auto.workers["a-sid"] = workerActivity{last: m.auto.workers["a-sid"].last, inFlight: 1}
@@ -585,8 +604,8 @@ func TestAutoStopCmdChecksTheTargetAgain(t *testing.T) {
 	)
 	cases := []struct {
 		job, record string
-		status      string // what claude lists at stop time; "" = not listed
-		listedJob   string // the job id claude lists for the session
+		status      string // the worker's own record at stop time; "" = no worker
+		listedJob   string // the job id in that record
 		startedAt   int64
 		want        int
 		stopCalled  bool
@@ -602,6 +621,7 @@ func TestAutoStopCmdChecksTheTargetAgain(t *testing.T) {
 		{"gone0000", "", "idle", "gone0000", started, inUse, false},
 		{"busy0000", same, "busy", "busy0000", started, inUse, false},
 		{"resp0000", same, "idle", "resp0000", started + 1, inUse, false},
+		{"turn0000", same, "idle", "turn0000", started, inUse, false}, // idle again, since a later moment
 		{"unl00000", same, "", "", 0, inUse, false},
 		{"othr0000", same, "idle", "ffff0009", started, inUse, false}, // the session runs under another job
 		{"att00000", same, "idle", "att00000", started, inUse, false},
@@ -613,16 +633,21 @@ func TestAutoStopCmdChecksTheTargetAgain(t *testing.T) {
 			writeJobState(t, home, c.job, c.record)
 		}
 		if c.status != "" {
-			listed = append(listed, claude.Session{SessionID: c.job + "-sid", JobID: c.listedJob, Status: c.status, StartedAt: c.startedAt})
+			s := claude.Session{SessionID: c.job + "-sid", JobID: c.listedJob, Status: c.status, StartedAt: c.startedAt, StatusSince: 100}
+			if c.job == "turn0000" {
+				s.StatusSince = 200
+			}
+			listed = append(listed, s)
 		}
 	}
-	stubLiveSessions(t, listed, nil)
+	listings := stubLiveSessions(t, nil, nil)
+	stubLiveRecords(t, listed, true)
 	stubAttachTargets(t, []string{"att00000", "hermes"}, true)
 	log := fakeClaude(t)
 
 	var wantLog []string
 	for _, c := range cases {
-		target := stopTarget{sessionID: c.job + "-sid", jobID: c.job, updated: seen, startedAt: started}
+		target := stopTarget{sessionID: c.job + "-sid", jobID: c.job, updated: seen, startedAt: started, statusSince: 100}
 		if c.job == "name0000" {
 			target.name = "Hermes-Agent"
 		}
@@ -642,23 +667,26 @@ func TestAutoStopCmdChecksTheTargetAgain(t *testing.T) {
 	if got := strings.TrimSpace(string(calls)); got != strings.Join(wantLog, "\n") {
 		t.Errorf("claude calls = %q, want %q", got, wantLog)
 	}
+	if *listings != 0 {
+		t.Errorf("the checks ran `claude agents` %d times, want 0", *listings)
+	}
 }
 
 func TestAutoStopCmdStopsNothingWhenItCannotTell(t *testing.T) {
 	seen := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	idle := []claude.Session{{SessionID: "a-sid", JobID: "aaaa0001", Status: "idle"}}
 	for _, tc := range []struct {
-		name    string
-		listErr error
-		scanOK  bool
+		name      string
+		recordsOK bool
+		scanOK    bool
 	}{
-		{"the process scan fails", nil, false},
-		{"claude cannot list the sessions", errors.New("daemon down"), true},
+		{"the process scan fails", true, false},
+		{"the worker's record cannot be read", false, true},
 	} {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		writeJobState(t, home, "aaaa0001", `{"state":"working","updatedAt":"2026-01-01T12:00:00Z","inFlight":{"tasks":0}}`)
-		stubLiveSessions(t, idle, tc.listErr)
+		stubLiveRecords(t, idle, tc.recordsOK)
 		stubAttachTargets(t, nil, tc.scanOK)
 		log := fakeClaude(t)
 
@@ -746,35 +774,9 @@ func TestAFailedListingIsNotWatchedTime(t *testing.T) {
 	}
 }
 
-// A listing can also succeed and still miss a worker for a poll (the daemon is
-// restarting). A worker that shows again was not watched meanwhile.
-func TestAWorkerThatShowsAgainGetsAFreshWindow(t *testing.T) {
-	now := time.Now()
-	m := autoStopModel(t, now)
-	m.all[0].Status = "" // this poll does not show the worker
-	if cmd := m.autoStopIdle(now, now, now); cmd != nil {
-		t.Fatal("setup: no worker, no stop")
-	}
-
-	m.all[0].Status = "idle"
-	back := now.Add(time.Second)
-	if cmd := m.autoStopIdle(back, back, back); cmd != nil {
-		t.Error("a worker that just showed again must not be stopped at once")
-	}
-	watched := back.Add(10 * time.Second) // the first poll that watched it all the way
-	if cmd := m.autoStopIdle(watched, watched, watched); cmd != nil {
-		t.Error("ten seconds are not a full window")
-	}
-	due := watched.Add(testAfter)
-	m.auto.lastWatch = due.Add(-time.Second)
-	if cmd := m.autoStopIdle(due, due, due); cmd == nil {
-		t.Error("it should be stopped after a full window")
-	}
-}
-
-// The checks before a stop run from cheap to costly, the process scan last. A
-// record that rules the stop out must not cost a `claude agents` call.
-func TestRecheckOrder(t *testing.T) {
+// The last check starts no claude process (a slow machine could time it out),
+// and the process scan runs last, so it is the freshest.
+func TestRecheckReadsFilesAndScansLast(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	seen := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -782,11 +784,12 @@ func TestRecheckOrder(t *testing.T) {
 	writeJobState(t, home, "busy0000", `{"state":"working","updatedAt":"2026-01-01T12:00:00Z","inFlight":{"tasks":2}}`)
 
 	var calls []string
-	origList, origScan := liveSessions, attachTargets
-	t.Cleanup(func() { liveSessions, attachTargets = origList, origScan })
-	liveSessions = func(context.Context) ([]claude.Session, error) {
-		calls = append(calls, "list")
-		return []claude.Session{{SessionID: "a-sid", JobID: "aaaa0001", Status: "idle"}}, nil
+	origOne, origScan := liveRecord, attachTargets
+	t.Cleanup(func() { liveRecord, attachTargets = origOne, origScan })
+	listings := stubLiveSessions(t, nil, nil)
+	liveRecord = func(string) (claude.Session, bool) {
+		calls = append(calls, "record")
+		return claude.Session{SessionID: "a-sid", JobID: "aaaa0001", Status: "idle"}, true
 	}
 	attachTargets = func() ([]string, error) {
 		calls = append(calls, "scan")
@@ -794,10 +797,13 @@ func TestRecheckOrder(t *testing.T) {
 	}
 
 	if got := recheck(stopTarget{sessionID: "b-sid", jobID: "busy0000", updated: seen}); got != inUse || len(calls) != 0 {
-		t.Errorf("a record with work in flight: outcome %d after calls %v, want in use with no calls", got, calls)
+		t.Errorf("a record with work in flight: outcome %d after %v, want in use with no further checks", got, calls)
 	}
-	if got := recheck(stopTarget{sessionID: "a-sid", jobID: "aaaa0001", updated: seen}); got != stillIdle || strings.Join(calls, ",") != "list,scan" {
-		t.Errorf("an idle target: outcome %d after calls %v, want still idle after list then scan", got, calls)
+	if got := recheck(stopTarget{sessionID: "a-sid", jobID: "aaaa0001", updated: seen}); got != stillIdle || strings.Join(calls, ",") != "record,scan" {
+		t.Errorf("an idle target: outcome %d after %v, want still idle after record then scan", got, calls)
+	}
+	if *listings != 0 {
+		t.Errorf("`claude agents` ran %d times, want 0", *listings)
 	}
 }
 
@@ -847,7 +853,7 @@ func TestDoRefreshFeedsAutoStop(t *testing.T) {
 		stubLiveSessions(t, listed, nil)
 		stubAttachTargets(t, tc.targets, tc.scanOK)
 		before := time.Now()
-		rr := doRefresh("", tc.watch)
+		rr := doRefresh(&sessionSource{}, "", tc.watch)
 
 		if got := rr.roster["a-sid"]; got != "aaaa0001" {
 			t.Errorf("%s: job = %q, want the one claude lists", tc.name, got)
@@ -873,7 +879,7 @@ func TestDoRefreshFeedsAutoStop(t *testing.T) {
 	// the refresh must say it cannot tell, even though the process scan works.
 	stubLiveSessions(t, nil, errors.New("daemon down"))
 	stubAttachTargets(t, nil, true)
-	rr := doRefresh("", true)
+	rr := doRefresh(&sessionSource{}, "", true)
 	if rr.attached != nil || !errors.Is(rr.watchErr, errListFailed) || len(rr.sessions) == 0 {
 		t.Errorf("a failed listing: attached = %v, watchErr = %v, sessions = %d; want nil, the list error, and the on-disk sessions",
 			rr.attached, rr.watchErr, len(rr.sessions))

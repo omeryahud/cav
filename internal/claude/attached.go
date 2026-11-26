@@ -1,12 +1,10 @@
 package claude
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -160,22 +158,9 @@ func agentsView(args []string) bool {
 // parkedView reports whether a claude shows the agents view inside itself: ←
 // in a plain claude parks the conversation and notes the job in its session file.
 func parkedView() bool {
-	h, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	files, _ := filepath.Glob(filepath.Join(h, ".claude", "sessions", "*.json"))
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			continue
-		}
-		var rec struct {
-			PID         int    `json:"pid"`
-			ProcStart   string `json:"procStart"`
-			ParkedJobID string `json:"parkedJobId"`
-		}
-		if json.Unmarshal(b, &rec) == nil && rec.ParkedJobID != "" && sameProcess(rec.PID, rec.ProcStart) {
+	recs, _ := readSessionRecords()
+	for _, r := range recs {
+		if r.ParkedJobID != "" && sameProcess(r.PID, r.ProcStart) {
 			return true
 		}
 	}

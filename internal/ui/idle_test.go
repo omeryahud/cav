@@ -78,8 +78,7 @@ func TestGroupingFromConfig(t *testing.T) {
 }
 
 // Stepping out never moves the cursor: the exit watchers report the back-note
-// and the job that was left (for auto-stop), with no selectJob. Both watchers
-// resolve immediately against a target that does not exist.
+// and the job that was left, with no selectJob. The targets here do not exist.
 func TestExitWatchersCarryNoSelectJob(t *testing.T) {
 	for name, cmd := range map[string]func() tea.Msg{
 		"pane":    watchPaneCmd("%99999", "aaaa0001", "back note"),

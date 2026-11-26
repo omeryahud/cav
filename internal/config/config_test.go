@@ -292,6 +292,21 @@ func TestIdleBackoffKeys(t *testing.T) {
 	}
 }
 
+func TestSafetyPollKey(t *testing.T) {
+	withConfig(t, "")
+	if cfg, _ := Load(); cfg.List.SafetyPoll != time.Minute {
+		t.Errorf("default = %v, want 1m", cfg.List.SafetyPoll)
+	}
+	withConfig(t, `{"list": {"safetyPollMs": 300000}}`)
+	if cfg, err := Load(); err != nil || cfg.List.SafetyPoll != 5*time.Minute {
+		t.Errorf("override = %v, err %v; want 5m", cfg.List.SafetyPoll, err)
+	}
+	withConfig(t, `{"list": {"safetyPollMs": 100}}`)
+	if cfg, err := Load(); err == nil || cfg.List.SafetyPoll != time.Minute {
+		t.Errorf("a value under 5s should be reported and keep the default, got %v, err %v", cfg.List.SafetyPoll, err)
+	}
+}
+
 func TestNewSessionDefaultsAndOverride(t *testing.T) {
 	withConfig(t, "")
 	cfg, _ := Load()

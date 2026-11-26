@@ -13,6 +13,9 @@ type Session struct {
 	SessionID string `json:"sessionId"`
 	Name      string `json:"name"`
 	Status    string `json:"status"`
+	// StatusSince is when Status last changed (epoch ms). It is known only for
+	// a session read from its process record, 0 otherwise.
+	StatusSince int64 `json:"-"`
 }
 
 // Short returns the 8-char id prefix (matches ~/.claude/jobs/<short>).

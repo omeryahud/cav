@@ -94,18 +94,20 @@ const (
 // messages
 type (
 	refreshResult struct {
-		sessions  []claude.Session
-		roster    claude.Roster
-		states    map[string]string
-		live      map[string]bool // sessionIds with a live daemon worker (vs on-disk only)
-		otherCavs int             // other running cav processes (forgotten instances burn polls)
-		repoOf    map[string]string
-		worktrees map[string][]claude.Worktree
-		workers   map[string]workerActivity // sessionId -> its live worker's activity
-		attached  map[string]bool           // job ids with a terminal attached; nil = unknown
-		watchErr  error                     // why auto-stop cannot trust this refresh (set only when it asked)
-		at        time.Time                 // when the session statuses were read
-		done      time.Time                 // when the refresh finished
+		sessions    []claude.Session
+		roster      claude.Roster
+		states      map[string]string
+		live        map[string]bool // sessionIds with a live daemon worker (vs on-disk only)
+		otherCavs   int             // other running cav processes (forgotten instances burn polls)
+		repoOf      map[string]string
+		worktrees   map[string][]claude.Worktree
+		workers     map[string]workerActivity // sessionId -> its live worker's activity
+		attached    map[string]bool           // job ids with a terminal attached; nil = unknown
+		watchErr    error                     // why auto-stop cannot trust this refresh (set only when it asked)
+		at          time.Time                 // when the session statuses were read
+		done        time.Time                 // when the refresh finished
+		fromRecords bool                      // the live sessions came from claude's process records, with no CLI call
+		events      bool                      // file events drive the refreshes (no polling)
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
@@ -174,6 +176,8 @@ type Model struct {
 	stoppedView    bool                      // true: showing the stopped-sessions window (s toggles)
 	justStopped    map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
 	auto           autoStopState             // what auto-stop keeps between refreshes
+	eventMode      bool                      // file events drive the refreshes: there is no poll to nap
+	ticking        bool                      // the one-second tick is running (see Update)
 	cfg            config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
 	seen           *seen.Store               // persisted cache: sessionId -> last name seen (survives restart + transient drops)
 	cursor         int
@@ -288,7 +292,7 @@ func New(opts Options) (*Model, error) {
 func (m *Model) Init() tea.Cmd {
 	m.refreshes = make(chan refreshResult)
 	m.act = newActivity()
-	go refreshLoop(m.refreshes, m.cfg.List, m.act, m.launchDir, m.cfg.AutoStop.After > 0)
+	go refreshLoop(nil, m.refreshes, m.cfg.List, m.act, m.launchDir, m.cfg.AutoStop.After > 0)
 	if m.initNewDir != "" {
 		return tea.Batch(waitRefresh(m.refreshes),
 			createCmd(m.initNewDir, m.initNewName, "", m.cfg.NewSession, m.cfg.Timeouts.Command))
@@ -300,11 +304,10 @@ func (m *Model) Init() tea.Cmd {
 
 // doRefresh merges the session sources. launchDir is resolved to its repo along
 // with the session cwds so the pane can show it even when it has no sessions.
-// watchAttached also lists the attached sessions, which auto-stop needs.
-func doRefresh(launchDir string, watchAttached bool) refreshResult {
+func doRefresh(src *sessionSource, launchDir string, watchAttached bool) refreshResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	live, listErr := liveSessions(ctx) // on an error, still show the durable on-disk jobs
+	live, fromRecords, listErr := src.list(ctx) // on an error, still show the durable on-disk jobs
 	// Wall clock only: the monotonic clock stands still while the laptop sleeps,
 	// which would hide a sleep from the age and gap checks in keepWatch.
 	at := time.Now().Round(0)
@@ -334,7 +337,7 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 	liveSet := map[string]bool{} // sessionIds with a live daemon worker
 	var sessions []claude.Session
 
-	// 1) Live sessions — the job id comes from the listing when claude gives it,
+	// 1) Live sessions: the job id comes from the listing when claude gives it,
 	//    else from the daemon roster (current even after a /branch; state.json can lag).
 	for _, s := range live {
 		if s.Kind == "interactive" {
@@ -399,7 +402,7 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 	repoOf, worktrees := scanWorktrees(cwds)
 	rr := refreshResult{sessions: sessions, roster: roster, states: states, live: liveSet,
 		otherCavs: countOtherCavs(), repoOf: repoOf, worktrees: worktrees,
-		workers: workerActivities(sessions, roster, jobRecs), at: at}
+		workers: workerActivities(sessions, roster, jobRecs), at: at, fromRecords: fromRecords}
 	if watchAttached {
 		rr.attached, rr.watchErr = watchedJobs(listErr, sessions, roster)
 	}
@@ -474,14 +477,23 @@ func scanWorktrees(cwds []string) (map[string]string, map[string][]claude.Worktr
 // whether to back off). wake interrupts an in-progress idle sleep so the first
 // key after a nap gets a refresh immediately, not up to idleRefresh later.
 type activity struct {
-	last atomic.Int64 // unix ms of the last user keypress
-	wake chan struct{}
+	last    atomic.Int64 // unix ms of the last user keypress
+	wake    chan struct{}
+	refresh chan struct{} // the user asked for a refresh (r)
 }
 
 func newActivity() *activity {
-	a := &activity{wake: make(chan struct{}, 1)}
+	a := &activity{wake: make(chan struct{}, 1), refresh: make(chan struct{}, 1)}
 	a.touch()
 	return a
+}
+
+// refreshNow asks the refresh loop for a full refresh right away.
+func (a *activity) refreshNow() {
+	select {
+	case a.refresh <- struct{}{}:
+	default:
+	}
 }
 
 func (a *activity) touch() {
@@ -506,22 +518,38 @@ func idleDelay(l config.List, sinceInput time.Duration) time.Duration {
 	return l.IdleRefresh
 }
 
-// refreshLoop runs the session refresh continuously in the background — no fixed
-// poll delay — so the list (status, ages, new sessions) updates as fast as a
-// refresh completes (~0.5s, bounded by `claude agents --json`). minRefresh is a
-// small floor that only matters if a refresh returns very fast (e.g. the daemon
-// is down), to avoid a hot spin. Once the user has been inactive for
-// l.IdleAfter, the loop naps l.IdleRefresh between polls — a forgotten cav
-// costs ~nothing instead of a continuous poll — and any keypress wakes it
-// instantly via act.wake.
-func refreshLoop(ch chan<- refreshResult, l config.List, act *activity, launchDir string, watchAttached bool) {
+// refreshLoop refreshes when claude's files change (or on r, or eventInterval).
+// Without the process records it polls: back to back, napping once the user idles.
+func refreshLoop(stop <-chan struct{}, ch chan<- refreshResult, l config.List, act *activity, launchDir string, watchAttached bool) {
+	src := &sessionSource{safetyPoll: l.SafetyPoll}
+	watch, _ := claude.NewWatcher() // nil without the process records
+	if watch != nil {
+		defer watch.Close()
+	}
 	for {
 		start := time.Now()
-		rr := doRefresh(launchDir, watchAttached)
+		rr := doRefresh(src, launchDir, watchAttached)
+		rr.events = watch != nil && rr.fromRecords
 		if d := time.Since(start); d < l.MinRefresh {
 			time.Sleep(l.MinRefresh - d)
 		}
-		ch <- rr
+		select {
+		case ch <- rr:
+		case <-stop:
+			return
+		}
+		if rr.events {
+			watch.TrackJobs(workerJobs(rr.sessions))
+			select {
+			case <-watch.Changed():
+			case <-act.refresh:
+				src.force = true
+			case <-time.After(eventInterval(l, watchAttached)):
+			case <-stop:
+				return
+			}
+			continue
+		}
 		if delay := idleDelay(l, act.sinceInput()); delay > 0 {
 			select {
 			case <-act.wake: // drain a token left over from the active period

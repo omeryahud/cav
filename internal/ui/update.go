@@ -13,9 +13,29 @@ import (
 	"github.com/omeryahud/cav/internal/claude"
 )
 
-// Update is the bubbletea message handler.
+// tickMsg drives what must happen on time, not on a refresh: a footer note
+// expires, the preview of a live session reloads.
+type tickMsg struct{}
+
+// Update is the bubbletea message handler. It keeps a one-second tick running
+// while a note or the preview needs it: refreshes come only when files change.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.update(msg)
+	if !m.ticking && (m.status != "" || m.showPreview()) {
+		m.ticking = true
+		tick := tea.Tick(time.Second, func(time.Time) tea.Msg { return tickMsg{} })
+		cmd = tea.Batch(cmd, tick)
+	}
+	return model, cmd
+}
+
+func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tickMsg:
+		m.ticking = false
+		m.expireStatus()
+		return m, m.reloadPreview()
+
 	case tea.WindowSizeMsg:
 		if msg.Width != m.width || msg.Height != m.height { // re-render previews for the new size (live terminal view depends on both)
 			m.prevCache = map[string]string{}
@@ -33,6 +53,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.states = msg.states
 		m.live = msg.live
 		m.auto.workers, m.auto.attached, m.auto.watchErr = msg.workers, msg.attached, msg.watchErr
+		m.eventMode = msg.events
 		m.unparked.Reload() // another cav may have stopped sessions and marked them to stay here
 		// First refresh: fold the tree if configured, then make sure the launch
 		// directory (selected since startup) is not hidden inside a folded repo.
@@ -43,17 +64,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.revealPath(m.launchDir)
 		}
-		// Expire the footer status note once it has sat unchanged for a while —
-		// action notes ("moved … to the stopped window", "renamed", …) are moment
-		// feedback, not state, and cav otherwise never clears them. Errors persist.
-		switch {
-		case m.status == "":
-			m.statusSeen = time.Time{}
-		case m.status != m.statusPrev:
-			m.statusPrev, m.statusSeen = m.status, time.Now()
-		case time.Since(m.statusSeen) > m.cfg.List.StatusTTL:
-			m.status, m.statusPrev = "", ""
-		}
+		m.expireStatus()
 		// Remember each session's name (persisted) so a later refresh that
 		// momentarily lacks it (the daemon drops it from agents --json, state.json
 		// often has none) — or a fresh startup — doesn't blank the row to the short
@@ -116,16 +127,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(waitRefresh(m.refreshes), cmd)
 			}
 		}
-		// Pump the next background refresh, and reload the selected preview —
-		// throttled (the list now refreshes continuously; selection changes load
-		// immediately via ensurePreview).
+		// Pump the next background refresh, and reload the selected preview.
 		cmds := []tea.Cmd{waitRefresh(m.refreshes)}
-		if m.showPreview() {
-			if s := m.current(); s != nil && time.Since(m.prevAt) >= m.cfg.Preview.Refresh {
-				m.prevAt = time.Now()
-				m.prevReq[s.SessionID] = true
-				cmds = append(cmds, m.previewCmdFor(s))
-			}
+		if cmd := m.reloadPreview(); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 		if cmd := m.autoStopIdle(msg.at, msg.done, time.Now()); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -242,6 +247,31 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// expireStatus clears a footer note that has sat unchanged for statusTTL: a
+// note is feedback for a moment, not state. Errors stay.
+func (m *Model) expireStatus() {
+	switch {
+	case m.status == "":
+		m.statusSeen = time.Time{}
+	case m.status != m.statusPrev:
+		m.statusPrev, m.statusSeen = m.status, time.Now()
+	case time.Since(m.statusSeen) > m.cfg.List.StatusTTL:
+		m.status, m.statusPrev = "", ""
+	}
+}
+
+// reloadPreview reloads the selected session's preview when it is shown and
+// preview.refreshMs has passed. A selection change loads at once (ensurePreview).
+func (m *Model) reloadPreview() tea.Cmd {
+	s := m.current()
+	if !m.showPreview() || s == nil || time.Since(m.prevAt) < m.cfg.Preview.Refresh {
+		return nil
+	}
+	m.prevAt = time.Now()
+	m.prevReq[s.SessionID] = true
+	return m.previewCmdFor(s)
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -388,9 +418,12 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingKill = mode
 		m.mode = modeConfirm
 	case "r":
-		// The list refreshes continuously in the background; r just clears any
-		// stale status/error and forces an immediate preview reload.
+		// r clears any stale status/error, reloads the preview, and asks the
+		// refresh loop for a full refresh now.
 		m.status, m.err, m.prevAt = "", nil, time.Time{}
+		if m.act != nil {
+			m.act.refreshNow()
+		}
 	case "/":
 		m.mode = modeFilter
 		m.filter = "" // start a fresh filter — don't carry the previous query
@@ -758,9 +791,8 @@ func armFastClose(paneID string) {
 	_ = exec.Command("tmux", "pipe-pane", "-t", paneID, trigger).Run()
 }
 
-// watchPaneCmd resolves once the session pane is gone — the pane-style
-// analogue of the ExecProcess exit callback. It carries the back-note and the
-// job the user stepped out of; the cursor stays wherever the user has it.
+// watchPaneCmd resolves once the session pane is gone, with the back-note and
+// the job the user stepped out of. The cursor stays wherever the user has it.
 func watchPaneCmd(paneID, jobID, note string) tea.Cmd {
 	return func() tea.Msg {
 		for {

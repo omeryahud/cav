@@ -17,7 +17,7 @@ const (
 	autoStopRetry    = time.Minute      // a stop round blocks another one for the same job this long
 	autoStopMaxAge   = 5 * time.Second  // an older refresh waited behind a blocked UI
 	autoStopGapSlack = 30 * time.Second // on top of the idle poll interval, before a pause counts as a gap
-	autoStopTimeout  = 10 * time.Second // for one claude call (list or stop)
+	autoStopTimeout  = 15 * time.Second // for `claude stop`, as the z key allows
 )
 
 // Tests stub the `claude agents` call and the process scan.
@@ -35,7 +35,6 @@ type autoStopState struct {
 	workers   map[string]workerActivity // sessionId -> its live worker's activity
 	attached  map[string]bool           // job ids with a terminal attached; nil = unknown
 	watchErr  error                     // why the last refresh cannot be trusted: auto-stop is paused
-	hadWorker map[string]bool           // job ids with a live worker at the previous refresh
 	wasInUse  map[string]bool           // job ids in use at the previous refresh
 	lastInUse map[string]time.Time      // job id -> when it was last in use
 	stopping  map[string]time.Time      // job id -> when a stop round started for it
@@ -60,6 +59,7 @@ type stopTarget struct {
 	sessionID, jobID, name string
 	updated                time.Time // the job record's last update
 	startedAt              int64     // the worker's start
+	statusSince            int64     // when the worker became idle
 }
 
 // autoStoppedMsg reports how a round ended for its one target.
@@ -167,23 +167,17 @@ func (m *Model) markInUse(jobID string, t time.Time) {
 	}
 }
 
-// stampInUse stamps each job in use now or at the previous refresh: what just
-// ended did so between the two polls, so the window starts at the later one.
+// stampInUse stamps each job with a terminal attached or background work, now
+// or at the previous refresh: only a scan sees those end, some time before it.
 func (m *Model) stampInUse(now time.Time) {
 	a := &m.auto
-	inUse, workers := map[string]bool{}, map[string]bool{}
+	inUse := map[string]bool{}
 	for jid := range a.attached {
 		inUse[jid] = true
 	}
 	for _, s := range m.all {
-		if !hasLiveWorker(s) {
-			continue
-		}
-		jid := m.roster[s.SessionID]
-		workers[jid] = true
-		// A worker the previous refresh did not show was not watched then.
-		if !idleWorker(s) || a.workers[s.SessionID].inFlight > 0 || !a.hadWorker[jid] {
-			inUse[jid] = true
+		if hasLiveWorker(s) && a.workers[s.SessionID].inFlight > 0 {
+			inUse[m.roster[s.SessionID]] = true
 		}
 	}
 	for _, jobs := range []map[string]bool{a.wasInUse, inUse} {
@@ -191,13 +185,14 @@ func (m *Model) stampInUse(now time.Time) {
 			m.markInUse(jid, now)
 		}
 	}
-	a.wasInUse, a.hadWorker = inUse, workers
+	a.wasInUse = inUse
 }
 
-// idleSince is the latest moment the session may have been in use.
-func (m *Model) idleSince(jobID string, w workerActivity) time.Time {
-	since := w.last
-	for _, t := range []time.Time{m.auto.lastInUse[jobID], m.auto.floor} {
+// idleSince is the latest moment the session may have been in use: when its
+// worker became idle, its record or its start, a use cav saw, or the watch floor.
+func (m *Model) idleSince(s claude.Session, jobID string, w workerActivity) time.Time {
+	since := time.UnixMilli(s.StatusSince)
+	for _, t := range []time.Time{w.last, m.auto.lastInUse[jobID], m.auto.floor} {
 		if t.After(since) {
 			since = t
 		}
@@ -220,17 +215,19 @@ func (m *Model) autoStopTargets(at time.Time) []stopTarget {
 		if !idleWorker(s) || !known || w.inFlight > 0 || a.attached[jid] || m.justStopped[s.SessionID] {
 			continue
 		}
-		// Only a job id claude itself lists for the worker is safe to stop: one
+		// Only a job id claude itself gives for the worker is safe to stop: one
 		// guessed from the on-disk records can belong to another session.
 		if s.JobID == "" || s.JobID != jid {
 			continue
 		}
-		if _, stopping := a.stopping[jid]; stopping {
+		// "Idle since" comes from the worker's own record. Without it (an older
+		// claude, listed by the CLI) cav cannot tell and stops nothing.
+		if _, stopping := a.stopping[jid]; stopping || s.StatusSince == 0 {
 			continue
 		}
-		if at.Sub(m.idleSince(jid, w)) >= after {
+		if at.Sub(m.idleSince(s, jid, w)) >= after {
 			out = append(out, stopTarget{sessionID: s.SessionID, jobID: jid, name: s.Name,
-				updated: w.updated, startedAt: s.StartedAt})
+				updated: w.updated, startedAt: s.StartedAt, statusSince: s.StatusSince})
 		}
 	}
 	return out
@@ -309,21 +306,12 @@ func recheck(t stopTarget) int {
 	return stillIdle
 }
 
-// listedIdle asks claude again whether the target still has the same idle
-// worker under the same job. A job record can lag behind a turn that just started.
+// listedIdle reads the worker's own record again: the same worker, idle since
+// the same moment. It is a file read, so a slow machine cannot time it out.
 func listedIdle(t stopTarget) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), autoStopTimeout)
-	defer cancel()
-	sessions, err := liveSessions(ctx)
-	if err != nil {
-		return false
-	}
-	for _, s := range sessions {
-		if s.SessionID == t.sessionID {
-			return idleWorker(s) && s.StartedAt == t.startedAt && s.JobID == t.jobID
-		}
-	}
-	return false
+	s, ok := liveRecord(t.jobID)
+	return ok && idleWorker(s) && s.SessionID == t.sessionID &&
+		s.StartedAt == t.startedAt && s.StatusSince == t.statusSince
 }
 
 // attachedNow scans the processes again. A scan that cannot tell counts as attached.
