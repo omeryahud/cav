@@ -36,15 +36,17 @@ func withAttachProcs(t *testing.T, err error, outs ...string) (home string, scan
 // procs joins process entries the way pgrep is asked to.
 func procs(entries ...string) string { return strings.Join(entries, procSep) + "\n" }
 
-func writeSessionFile(t *testing.T, home string, pid int, body string) {
+func writeSessionFile(t *testing.T, home string, pid int, body string) (path string) {
 	t.Helper()
 	dir := filepath.Join(home, ".claude", "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.json", pid)), []byte(body), 0o644); err != nil {
+	path = filepath.Join(dir, fmt.Sprintf("%d.json", pid))
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return path
 }
 
 // cavWrapper is the shell cav runs an attach in, as a real process list shows
@@ -234,6 +236,20 @@ func TestAttachTargetsSeesAViewInsideAClaudeProcess(t *testing.T) {
 		}
 		if !tc.view && !reflect.DeepEqual(got, []string{"58f5b117"}) {
 			t.Errorf("%s: targets = %q, want the attach", tc.name, got)
+		}
+	}
+}
+
+// A record cav cannot read must not hide the view another process shows.
+func TestAttachTargetsSeesAViewNextToABadRecord(t *testing.T) {
+	me := os.Getpid()
+	for name, badPid := range map[string]int{"left by an ended process": deadPid(t), "of a running process": os.Getppid()} {
+		home, _ := withAttachProcs(t, nil, procs("76300 claude attach 58f5b117"))
+		writeSessionFile(t, home, me, fmt.Sprintf(`{"pid":%d,"parkedJobId":"abcd0001"}`, me))
+		writeSessionFile(t, home, badPid, `{"pid":`)
+
+		if got, err := AttachTargets(); !errors.Is(err, ErrAgentsView) {
+			t.Errorf("a bad record %s: got %q, %v; want ErrAgentsView", name, got, err)
 		}
 	}
 }

@@ -45,7 +45,8 @@ after.
     `JobRecord`/`ScanJobs`.
   - `sessions.go`: `LiveSessions`/`LiveSession`, the live workers read from
     claude's process records with no CLI call.
-  - `watch.go`: `Watcher`, file events (fsnotify) on the files cav reads.
+  - `watch.go`: `Watcher`, file events (fsnotify) on the files cav reads, and
+    `Repair`, which sets a lost watch up again.
   - `attached.go`: `AttachTargets`, the process scan auto-stop uses.
   - `git.go` — git worktree access for the directory tree (`RepoRoot`,
     `Worktrees`, `DefaultBranch`, `AddWorktree`, `RemoveWorktree`).
@@ -77,7 +78,7 @@ after.
 
 ## How sessions are sourced (the critical knowledge)
 
-There are **four** data sources, and they disagree — getting this right was the
+There are **four** data sources, and they disagree. Getting this right was the
 bulk of the work. Don't "simplify" back to a single source.
 
 1. **`claude agents --json`** — *live daemon workers only*. Fields per element:
@@ -113,11 +114,18 @@ bulk of the work. Don't "simplify" back to a single source.
    `pid, procStart, jobId, sessionId, cwd, name, startedAt, status,
    statusUpdatedAt`: the same fields `agents --json` prints for a live worker
    (compared on real data), plus **when the status last changed**.
-   `claude.LiveSessions` reads them (`status: "shell"` is listed as `busy`; a
-   record whose pid is gone or was reused is skipped, the `ps` check runs once
-   per process). ⚠️ These files are internal to claude, not a documented
-   interface: an unknown shape makes `LiveSessions` report `ok = false` and cav
-   goes back to the CLI.
+   `claude.LiveSessions` reads them. The status is mapped as the CLI maps it
+   (`listedStatus`): `idle` and `waiting` stay, anything else is `busy`. That
+   includes **no status yet**: a worker that starts cold writes its record
+   without one for about a second. A record whose pid is gone or was reused is
+   skipped; the `ps` check runs once per process and again every
+   `recheckProcess` (1 min), because a pid can go to another process. A record
+   that does not parse is skipped when its process (the file name is the pid)
+   has ended. For a running process it is read once more after `recordRetry`
+   (records are rewritten in place, so a read can land in a write).
+   ⚠️ These files are internal to claude, not a documented interface: a shape
+   cav does not know (still unparsable, or a worker with no job or session id)
+   makes `LiveSessions` report `ok = false` and that refresh asks the CLI.
 
 **`attach` / `stop` / `logs` key on the JOB ID** (the short id = jobs/ dir name =
 roster worker key), **NOT the full session UUID**. They coincide for most
@@ -128,11 +136,40 @@ sessions but differ after branch/respawn (e.g. session `72cdfc0f` ↔ job
 (`refreshLoop`); results flow to the update loop via a channel (`waitRefresh`),
 which re-arms itself each time. **A refresh is driven by file events, not by a
 timer** (`claude.Watcher`, fsnotify/kqueue on `sessions/`, `daemon/` (the
-roster and the attach journal), `jobs/`, and the job directories of the live
-workers only, to keep the open files few): cav sleeps until claude changes a
-file it reads, `r` is pressed, or `eventInterval` passes (`list.safetyPollMs`,
-60s; `list.idleRefreshMs`, 10s, when auto-stop is on, because an attach leaves
-no file and auto-stop needs a steady scan). A keypress alone starts no refresh.
+roster and the attach journal), `jobs/`, the job directories of the sessions
+that had a worker while this cav runs, and cav's own `unparked.json`): cav
+sleeps until one of those files changes, `r` is pressed, or `eventInterval`
+passes (`list.safetyPollMs`, 60s; `list.idleRefreshMs`, 10s, when auto-stop is
+on, because an attach leaves no file and auto-stop needs a steady scan). A
+keypress alone starts no refresh. The details that matter:
+- **One write, one refresh.** A record replaced by a rename gives two events
+  (remove, create). After an event the loop waits `list.minRefreshMs`
+  (`settle`) and takes the events that came meanwhile, so it refreshes once
+  and reads the finished file.
+- **The watch is repaired before every refresh** (`Watcher.Repair`). On
+  kqueue, fsnotify can stop following a file that is replaced by a rename
+  twice in a row (reproduced: 40 quick replaces of a `state.json`, then no
+  event at all). So the watcher remembers the inode of each such file (job
+  records, the roster, `unparked.json`); a new inode means the watch on that
+  file is removed and added again (one open; with the fix, 8 of 8 runs of
+  that test pass, without it half fail). The temp file of a replace
+  (`state.json.tmp.*`) also counts as a change, because it is seen even when
+  the watch on the record is lost. `Repair` also adds a directory that was
+  made after cav started (`daemon/attach-journal`, `jobs`, a `sessions`
+  directory that was removed and made again).
+- **A job is watched from the moment its worker shows in the records**, before
+  the listing and the job files are read (`sessionSource.track`), and it stays
+  watched after the worker ends: claude still writes the last state then, and
+  fsnotify cannot give a directory back to its parent's watch (a job that was
+  dropped and later deleted gave no event). It is dropped when its directory
+  is gone. The cost is about 4 open files per such job.
+- **Slow first event.** fsnotify opens every new file in a watched directory,
+  and on this machine the first open of a new file can take 0.2 to 1.5s
+  (measured at load 6). Events queue behind it, so a change right after a new
+  file can show that much later. Tests wait up to 5s for an event.
+- **What no file event covers** shows at the next refresh, so up to
+  `eventInterval` late: "N other cavs running", a worktree made outside cav,
+  and the retry after a failed git scan.
 
 **Why:** one `claude agents --json` costs about 2.5s, 0.35 CPU-s and 164 MB of
 peak memory (measured), and the old loop started one on every refresh, back to
@@ -144,16 +181,26 @@ Between those, the live workers come from the process records and
 (the daemon lists sessions that have none). A listing that fails keeps the
 previous one and is not retried until the next safety interval. Measured on
 this machine: one `claude` start in 80s, where the polling build started one
-per refresh. A one-second UI tick (`tickMsg`, only while a footer note shows or
-the preview is open) expires the note and reloads the preview, which a refresh
-used to do.
+per refresh. A one-second UI tick (`tickMsg`, `needsTick`) does what a refresh
+used to do on time. It runs only while a footer note shows (it expires the
+note), the preview is open (it reloads it), or a listed age still counts in
+seconds (it redraws). The preview of a live session starts `claude logs`, so
+`reloadPreview` never starts a load while one runs (`prevReq`, cleared when the
+load returns), and once the user is away (`list.idleAfterMs`) it reloads every
+`list.idleRefreshMs`, not every `preview.refreshMs`.
 
 **Fallback (no process records, older claude):** the loop polls as before:
 back to back while the user is active, and after `list.idleAfterMs` (60s)
 without a keypress it naps `list.idleRefreshMs` (10s) between polls
 (`idleDelay`/`activity`; every keypress stamps `act.touch()`, which wakes a nap
 through a buffered channel, drained-and-rechecked to dodge the stamp/token
-race). The header shows `zzz` while napping (polling mode only). It always
+race). The header shows `zzz` while napping (polling mode only). With no
+watcher the source asks the CLI on every poll (`sessionSource.polling`): the
+CLI call is what paces the loop, and reading the records back to back would
+spin. The loop tries to start the watcher again on every refresh, so it turns
+to file events as soon as the records appear. A single refresh that cannot
+read the records (`ok = false`) also polls, but its nap still ends on a file
+event and on `r`. The header always
 shows "N other cavs running" (`countOtherCavs`, a per-refresh `pgrep -x cav`).
 The merge:
 1. List live sessions; build `sessionId → jobId`. Newer claude gives the job id
@@ -327,10 +374,11 @@ visible at a glance.
   a group → its parent session, resolved from `m.all`); only the stopped view
   populates it. `groupedVisual`/`flatVisual` draw the ghost just above the branch.
 - **Preview pane** (right, 50% width, `p` toggles; **hidden on startup** by
-  default — `preview.startOn` in config.json shows it from launch), reloaded on
-  a ~2s throttle
-  (`previewRefresh`) even though the list refreshes continuously, so `claude logs`
-  isn't hammered; a selection change reloads it immediately:
+  default; `preview.startOn` in config.json shows it from launch), reloaded by
+  the UI tick every `preview.refreshMs` (2s) while the user is active and every
+  `list.idleRefreshMs` once they are away, never while a load still runs
+  (`reloadPreview`), so `claude logs` isn't hammered; a selection change
+  reloads it immediately:
   - For a session with a **live worker**, it shows the **actual terminal screen**:
     cav pulls `claude logs` (the raw recent terminal output) and reconstructs it
     through a **vt10x emulator** (`internal/termview`), rendered with color. The
@@ -691,13 +739,13 @@ visible at a glance.
   | `preview.widthPercent` | 50 | pane width as a % of the terminal (10–90) |
   | `preview.emuCols` / `emuRows` | 220 / 64 | emulated terminal size for a live session's screen (floors) |
   | `preview.maxLogBytes` | 262144 | cap on trailing `claude logs` output emulated |
-  | `preview.refreshMs` | 2000 | throttle between background preview reloads |
+  | `preview.refreshMs` | 2000 | throttle between background preview reloads while the user is active (away: `list.idleRefreshMs`) |
   | `preview.markdownStyle` | `dark` | glamour style for the non-live transcript view |
   | `preview.startOn` | `false` | show the preview pane on startup (`p` toggles it any time) |
   | `list.nameColMax` | 50 | name-column cap **when the preview is on** (off = fit the longest name) |
   | `list.nameColReserve` | 18 | columns kept for the status/age columns |
   | `list.statusTTLMs` | 6000 | how long a footer note lingers |
-  | `list.minRefreshMs` | 250 | floor between refreshes (merges a burst of file events, guards a hot spin) |
+  | `list.minRefreshMs` | 250 | event mode: the wait after a file event before the refresh, so one write (several events) starts one refresh. Polling mode: the floor between polls |
   | `list.safetyPollMs` | 60000 | event mode: how often `claude agents` still runs as a cross-check, and the longest wait between refreshes (min 5000) |
   | `list.idleAfterMs` | 60000 | polling mode only (no process records): no keypress for this long → idle poll backoff (0 disables) |
   | `list.idleRefreshMs` | 10000 | polling mode: poll interval while idle (`zzz` in the header). Event mode: the longest wait between refreshes while auto-stop is on |
@@ -739,7 +787,8 @@ visible at a glance.
 - `~/.config/cav/unparked.json` — cav-local set of stopped session IDs brought back
   to the main pane with `b` (overrides the stopped-window classification). Also
   set by `x`/`z`/`Z` and auto-stop. Each refresh reloads it when its mtime
-  changed (`Store.Reload`), so several open cavs agree on which stopped
+  changed (`Store.Reload`), and the file is watched, so a change by another
+  cav starts a refresh: several open cavs agree at once on which stopped
   sessions stay in the main pane. `Add`/`Remove` take a lock every cav honors
   (`flock` on `unparked.json.lock`), read the file again, change it, and write
   through a temp file and a rename, so one cav does not drop another's marks
@@ -780,8 +829,8 @@ prompt is optional (empty = idle). The session is then created and
 `claude.Create` parses the new job id out of `claude --bg`'s output
 (`backgrounded · <id> …`); a new session registers with the daemon
 asynchronously, so cav stashes that id (`selectJobID`) and moves the cursor to
-the session once it shows up in a refresh (the continuous background loop catches
-it, ~0.5s).
+the session once it is listed (`showNew`: at once when a refresh already listed
+it before `claude --bg` returned, else at the refresh its files start).
 (`--bg` ignores `--session-id`, so we can't choose the id ourselves.)
 Every cav-created session is launched with an **explicit model/effort**
 (`createArgs`: `--model claude-fable-5-1 --effort max` by default, `newSession.*` in

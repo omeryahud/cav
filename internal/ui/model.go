@@ -518,53 +518,113 @@ func idleDelay(l config.List, sinceInput time.Duration) time.Duration {
 	return l.IdleRefresh
 }
 
+// refresher runs the background refreshes: on file events when claude keeps
+// process records, else by polling the CLI.
+type refresher struct {
+	stop          <-chan struct{}
+	l             config.List
+	act           *activity
+	src           *sessionSource
+	watch         *claude.Watcher // nil while there is nothing to watch
+	changed       <-chan struct{} // the watcher's tokens; nil, so never ready, without one
+	watchAttached bool
+}
+
 // refreshLoop refreshes when claude's files change (or on r, or eventInterval).
 // Without the process records it polls: back to back, napping once the user idles.
 func refreshLoop(stop <-chan struct{}, ch chan<- refreshResult, l config.List, act *activity, launchDir string, watchAttached bool) {
-	src := &sessionSource{safetyPoll: l.SafetyPoll}
-	watch, _ := claude.NewWatcher() // nil without the process records
-	if watch != nil {
-		defer watch.Close()
-	}
+	r := &refresher{stop: stop, l: l, act: act, src: &sessionSource{safetyPoll: l.SafetyPoll}, watchAttached: watchAttached}
+	defer r.closeWatch()
 	for {
+		r.ensureWatch()
 		start := time.Now()
-		rr := doRefresh(src, launchDir, watchAttached)
-		rr.events = watch != nil && rr.fromRecords
-		if d := time.Since(start); d < l.MinRefresh {
-			time.Sleep(l.MinRefresh - d)
+		rr := doRefresh(r.src, launchDir, watchAttached)
+		rr.events = r.watch != nil && rr.fromRecords
+		if d := time.Since(start); !rr.events && d < l.MinRefresh {
+			time.Sleep(l.MinRefresh - d) // a CLI that fails at once must not spin the loop
 		}
 		select {
 		case ch <- rr:
 		case <-stop:
 			return
 		}
-		if rr.events {
-			watch.TrackJobs(workerJobs(rr.sessions))
-			select {
-			case <-watch.Changed():
-			case <-act.refresh:
-				src.force = true
-			case <-time.After(eventInterval(l, watchAttached)):
-			case <-stop:
-				return
-			}
-			continue
-		}
-		if delay := idleDelay(l, act.sinceInput()); delay > 0 {
-			select {
-			case <-act.wake: // drain a token left over from the active period
-			default:
-			}
-			// Re-check after the drain: a keypress racing it deposited the very
-			// token we just ate, but it also stamped last — so this catches it.
-			if idleDelay(l, act.sinceInput()) > 0 {
-				select {
-				case <-time.After(delay):
-				case <-act.wake:
-				}
-			}
+		if !r.wait(rr.events) {
+			return
 		}
 	}
+}
+
+// ensureWatch starts the watcher, again on every refresh until it works, and
+// repairs it before the files are read. With no watcher the source polls.
+func (r *refresher) ensureWatch() {
+	if r.watch == nil {
+		if w, err := claude.NewWatcher(unpark.Path()); err == nil {
+			r.watch, r.changed, r.src.track = w, w.Changed(), w.TrackJobs
+		}
+	} else {
+		r.watch.Repair()
+	}
+	r.src.polling = r.watch == nil
+}
+
+func (r *refresher) closeWatch() {
+	if r.watch != nil {
+		r.watch.Close()
+	}
+}
+
+// wait blocks until the next refresh is due. It reports false when the loop
+// must end. events tells that the last refresh needed no CLI call.
+func (r *refresher) wait(events bool) bool {
+	var key <-chan struct{} // stays nil, so never ready, in event mode
+	every := eventInterval(r.l, r.watchAttached)
+	if !events {
+		if every = r.pollDelay(); every == 0 {
+			return true
+		}
+		key = r.act.wake
+	}
+	select {
+	case <-r.changed:
+		return r.settle()
+	case <-r.act.refresh:
+		r.src.force = true
+	case <-key:
+	case <-time.After(every):
+	case <-r.stop:
+		return false
+	}
+	return true
+}
+
+// pollDelay is how long a poll waits for the next one: 0 while the user is
+// active, the idle interval after that.
+func (r *refresher) pollDelay() time.Duration {
+	if idleDelay(r.l, r.act.sinceInput()) == 0 {
+		return 0
+	}
+	select {
+	case <-r.act.wake: // drain a token left over from the active period
+	default:
+	}
+	// Checked again after the drain: a keypress racing it left the very token
+	// we just took, but it also stamped the time.
+	return idleDelay(r.l, r.act.sinceInput())
+}
+
+// settle lets the other events of one write arrive: a record replaced by a
+// rename gives two, and a refresh must read the finished file.
+func (r *refresher) settle() bool {
+	select {
+	case <-time.After(r.l.MinRefresh):
+	case <-r.stop:
+		return false
+	}
+	select {
+	case <-r.changed:
+	default:
+	}
+	return true
 }
 
 // countOtherCavs reports how many other cav processes are running — forgotten

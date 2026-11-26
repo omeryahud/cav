@@ -20,7 +20,9 @@ var (
 // costs about 160 MB and a third of a CPU second, so it runs only when needed.
 type sessionSource struct {
 	safetyPoll time.Duration
-	listing    []claude.Session // the last full listing
+	polling    bool                // no file events: ask the CLI on every refresh
+	track      func(jobs []string) // told the live workers before their job files are read
+	listing    []claude.Session    // the last full listing
 	listedAt   time.Time
 	workers    string // the worker set at the last full listing
 	force      bool   // the user asked for a full listing
@@ -30,9 +32,12 @@ type sessionSource struct {
 // tells that the live ones were read from the process records, with no CLI call.
 func (src *sessionSource) list(ctx context.Context) (sessions []claude.Session, fromRecords bool, err error) {
 	workers, ok := liveRecords()
-	if !ok {
+	if !ok || src.polling {
 		sessions, err = liveSessions(ctx)
 		return sessions, false, err
+	}
+	if src.track != nil {
+		src.track(workerJobs(workers))
 	}
 	// The CLI still gives the sessions the daemon lists with no process.
 	if key := workerKey(workers); src.force || key != src.workers || time.Since(src.listedAt) >= src.safetyPoll {
@@ -46,10 +51,7 @@ func (src *sessionSource) list(ctx context.Context) (sessions []claude.Session, 
 
 // workerKey names a worker set, to tell when a worker started or ended.
 func workerKey(workers []claude.Session) string {
-	ids := make([]string, len(workers))
-	for i, w := range workers {
-		ids[i] = w.JobID
-	}
+	ids := workerJobs(workers)
 	sort.Strings(ids)
 	return strings.Join(ids, ",")
 }
@@ -81,7 +83,7 @@ func mergeListing(workers, listing []claude.Session) []claude.Session {
 
 // workerJobs returns the job ids of the sessions that have a process.
 func workerJobs(sessions []claude.Session) []string {
-	var ids []string
+	ids := make([]string, 0, len(sessions))
 	for _, s := range sessions {
 		if hasLiveWorker(s) && s.JobID != "" {
 			ids = append(ids, s.JobID)

@@ -25,9 +25,12 @@ type Store struct {
 	mtime time.Time // the file's modification time when it was last read or written
 }
 
+// Path is the file every cav keeps the marks in.
+func Path() string { return filepath.Join(config.Dir(), "unparked.json") }
+
 // Load reads unparked.json (missing file = empty set).
 func Load() *Store {
-	s := &Store{path: filepath.Join(config.Dir(), "unparked.json"), m: map[string]bool{}}
+	s := &Store{path: Path(), m: map[string]bool{}}
 	s.read()
 	return s
 }

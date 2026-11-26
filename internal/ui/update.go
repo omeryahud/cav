@@ -14,19 +14,33 @@ import (
 )
 
 // tickMsg drives what must happen on time, not on a refresh: a footer note
-// expires, the preview of a live session reloads.
+// expires, the preview of a live session reloads, an age in seconds counts.
 type tickMsg struct{}
 
 // Update is the bubbletea message handler. It keeps a one-second tick running
-// while a note or the preview needs it: refreshes come only when files change.
+// while the screen needs it: refreshes come only when files change.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.update(msg)
-	if !m.ticking && (m.status != "" || m.showPreview()) {
+	if !m.ticking && m.needsTick() {
 		m.ticking = true
 		tick := tea.Tick(time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 		cmd = tea.Batch(cmd, tick)
 	}
 	return model, cmd
+}
+
+func (m *Model) needsTick() bool {
+	return m.status != "" || m.showPreview() || m.showsSeconds()
+}
+
+// showsSeconds reports whether a listed age still counts in seconds.
+func (m *Model) showsSeconds() bool {
+	for i := range m.view {
+		if time.Since(m.view[i].Started()) < time.Minute {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -91,31 +105,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		// A clone (C) is hidden until it appears under its "copy-…" name; once it
-		// does, retire the pending entry so a later user rename can't re-hide it.
-		for i := range m.all {
-			jid := m.roster[m.all[i].SessionID]
-			if want, ok := m.pendingClone[jid]; ok && m.displayName(m.all[i]) == want {
-				delete(m.pendingClone, jid)
-			}
-		}
-		m.recompute()
-		// A just-created session (n/N) registers asynchronously; once it appears
-		// in the list, move the cursor to it (highlight it) instead of attaching —
-		// except for `cav -n -a`, which attaches to it right here.
-		if m.selectJobID != "" {
-			if i := m.viewIndexByJobID(m.selectJobID); i >= 0 {
-				m.cursor = i
-				m.previewScroll = 0
-				m.selectJobID = ""
-				m.prevAt = time.Time{} // force a preview load for the newly-selected session
-				if m.attachNew {
-					m.attachNew = false
-					if cmd := m.openCurrent(); cmd != nil {
-						return m, tea.Batch(waitRefresh(m.refreshes), cmd)
-					}
-				}
-			}
+		if cmd := m.showNew(); cmd != nil {
+			return m, tea.Batch(waitRefresh(m.refreshes), cmd)
 		}
 		// `cav -o <name>`: on the first refresh that has sessions, resolve the
 		// name and open the match — one shot, exactly as if ↵ was pressed on it.
@@ -151,6 +142,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case previewMsg:
 		m.prevCache[msg.id] = sanitizePreview(msg.text)
+		delete(m.prevReq, msg.id)
 		return m, nil
 
 	case errMsg:
@@ -164,15 +156,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status, m.err = msg.note, nil
 		}
 		if msg.selectJob != "" {
-			// e.g. stepping out of a session — re-highlight it once the next refresh
-			// places it (the list may have reordered while attached), via the same
-			// selectJobID path create/fork/clone use.
 			m.selectJobID = msg.selectJob
 		}
 		if msg.leftJob != "" {
 			m.markInUse(msg.leftJob, time.Now())
 		}
-		return m, nil // the background loop refreshes continuously
+		return m, nil // what the action changed on disk starts the next refresh
 
 	case searchDoneMsg:
 		m.matchIDs = msg.ids
@@ -212,11 +201,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case createdMsg:
-		// Freshly-created session (n or N). Don't attach — refresh, and once the
-		// new session shows up, highlight it (cursor moves to it; see refreshResult).
+		// A new session (n or N) is highlighted, not attached. It can be listed
+		// already: the refresh its files started may have come first.
 		m.status = "created " + msg.label
 		m.selectJobID = msg.jobID // "" if the id couldn't be parsed → just won't auto-select
-		return m, nil             // the background loop will see it and highlight it
+		return m, m.showNew()
 
 	case forkedMsg:
 		// Fork (F) or clone (C) created a new session continuing parentSID's
@@ -234,7 +223,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pendingClone[msg.childJobID] = msg.cloneName
 		m.selectJobID = msg.childJobID
-		return m, nil
+		return m, m.showNew()
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -262,16 +251,50 @@ func (m *Model) expireStatus() {
 	}
 }
 
-// reloadPreview reloads the selected session's preview when it is shown and
-// preview.refreshMs has passed. A selection change loads at once (ensurePreview).
+// showNew retires the clones that now carry their typed name and highlights
+// the new session once it is listed. For `cav -n -a` it returns the attach.
+func (m *Model) showNew() tea.Cmd {
+	// Retired, so a later rename by the user cannot hide the clone again.
+	for i := range m.all {
+		jid := m.roster[m.all[i].SessionID]
+		if want, ok := m.pendingClone[jid]; ok && m.displayName(m.all[i]) == want {
+			delete(m.pendingClone, jid)
+		}
+	}
+	m.recompute()
+	i := m.viewIndexByJobID(m.selectJobID)
+	if m.selectJobID == "" || i < 0 {
+		return nil
+	}
+	m.cursor, m.previewScroll, m.selectJobID = i, 0, ""
+	m.prevAt = time.Time{} // load the preview of the newly selected session now
+	if !m.attachNew {
+		return nil
+	}
+	m.attachNew = false
+	return m.openCurrent()
+}
+
+// reloadPreview reloads the shown preview once its interval has passed, and
+// never while a load of it runs: for a live session a load starts `claude logs`.
 func (m *Model) reloadPreview() tea.Cmd {
 	s := m.current()
-	if !m.showPreview() || s == nil || time.Since(m.prevAt) < m.cfg.Preview.Refresh {
+	if !m.showPreview() || s == nil || m.prevReq[s.SessionID] || time.Since(m.prevAt) < m.previewInterval() {
 		return nil
 	}
 	m.prevAt = time.Now()
 	m.prevReq[s.SessionID] = true
 	return m.previewCmdFor(s)
+}
+
+// previewInterval is preview.refreshMs while the user is active, and the idle
+// interval once they are away.
+func (m *Model) previewInterval() time.Duration {
+	every := m.cfg.Preview.Refresh
+	if m.act != nil {
+		every = max(every, idleDelay(m.cfg.List, m.act.sinceInput()))
+	}
+	return every
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

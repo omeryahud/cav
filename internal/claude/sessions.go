@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // sessionRecord is what a claude process keeps about itself in
@@ -25,13 +28,20 @@ type sessionRecord struct {
 	ParkedJobID     string `json:"parkedJobId"`
 }
 
+const (
+	// A record is rewritten in place, so a read can land in the middle of a write.
+	recordRetry = 50 * time.Millisecond
+	// A pid can go to another process, so its start time is checked again this often.
+	recheckProcess = time.Minute
+)
+
 func sessionsDir() (string, bool) {
 	h, err := os.UserHomeDir()
 	return filepath.Join(h, ".claude", "sessions"), err == nil
 }
 
-// readSessionRecords reads every process record. ok is false when the
-// directory is missing or a record cannot be parsed.
+// readSessionRecords reads every process record it can. ok is false when the
+// directory is missing or the record of a running process cannot be parsed.
 func readSessionRecords() (recs []sessionRecord, ok bool) {
 	dir, ok := sessionsDir()
 	if !ok {
@@ -42,32 +52,58 @@ func readSessionRecords() (recs []sessionRecord, ok bool) {
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	for _, f := range files {
-		b, err := os.ReadFile(f)
+		r, state := readRecord(f)
+		switch state {
+		case recordRead:
+			recs = append(recs, r)
+		case recordUnknown:
+			ok = false
+		}
+	}
+	return recs, ok
+}
+
+const (
+	recordRead    = iota
+	recordGone    // no file, or what a process that ended left behind
+	recordUnknown // a running process wrote something cav cannot parse
+)
+
+func readRecord(path string) (sessionRecord, int) {
+	for try := 0; ; try++ {
+		b, err := os.ReadFile(path)
 		if err != nil {
-			continue // the process just ended
+			return sessionRecord{}, recordGone
 		}
 		var r sessionRecord
-		if json.Unmarshal(b, &r) != nil {
-			return nil, false
+		if json.Unmarshal(b, &r) == nil {
+			return r, recordRead
 		}
-		recs = append(recs, r)
+		pid, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(path), ".json"))
+		if err != nil || !running(pid) {
+			return sessionRecord{}, recordGone
+		}
+		if try > 0 {
+			return sessionRecord{}, recordUnknown
+		}
+		time.Sleep(recordRetry)
 	}
-	return recs, true
 }
 
 // LiveSessions returns the background sessions that have a process, as
-// `claude agents --json` lists them, read from the records the processes keep.
-// ok is false when the records cannot be relied on: then ask the CLI.
+// `claude agents --json` lists them. ok is false when cav must ask the CLI.
 func LiveSessions() (sessions []Session, ok bool) {
 	recs, ok := readSessionRecords()
 	if !ok {
 		return nil, false
 	}
+	pids := make(map[int]bool, len(recs))
 	for _, r := range recs {
+		pids[r.PID] = true
 		if r.Kind != "bg" || r.Spare || !recordIsLive(r) {
 			continue
 		}
-		if r.JobID == "" || r.SessionID == "" || r.Status == "" {
+		if r.JobID == "" || r.SessionID == "" {
 			return nil, false // a shape cav does not know
 		}
 		sessions = append(sessions, Session{
@@ -82,6 +118,7 @@ func LiveSessions() (sessions []Session, ok bool) {
 			StatusSince: r.StatusUpdatedAt,
 		})
 	}
+	forgetAllBut(pids)
 	return sessions, true
 }
 
@@ -96,49 +133,66 @@ func LiveSession(jobID string) (Session, bool) {
 	return Session{}, false
 }
 
-// listedStatus maps a record's status to what `claude agents --json` prints.
-// A worker running a shell command is listed as busy.
+// listedStatus maps a record's status to what `claude agents --json` prints:
+// anything but idle and waiting is busy. A worker that just started has none yet.
 func listedStatus(status string) string {
-	if status == "shell" {
-		return "busy"
+	if status == "idle" || status == "waiting" {
+		return status
 	}
-	return status
+	return "busy"
+}
+
+type processCheck struct {
+	start string
+	at    time.Time
 }
 
 // verified remembers the records whose process start was checked with ps, so
-// the check runs once per process and not on every refresh.
+// the check does not run on every refresh.
 var verified = struct {
 	sync.Mutex
-	start map[int]string
-}{start: map[int]string{}}
+	checks map[int]processCheck
+}{checks: map[int]processCheck{}}
+
+func running(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
 
 // recordIsLive reports whether r's process still runs. A record can outlive a
 // crash, and its pid can go to another process.
 func recordIsLive(r sessionRecord) bool {
-	if r.PID <= 0 {
-		return false
-	}
-	if err := syscall.Kill(r.PID, 0); err != nil && err != syscall.EPERM {
-		forget(r.PID)
+	if !running(r.PID) {
+		verified.Lock()
+		delete(verified.checks, r.PID)
+		verified.Unlock()
 		return false
 	}
 	verified.Lock()
-	seen, known := verified.start[r.PID]
+	c, known := verified.checks[r.PID]
 	verified.Unlock()
-	if known && seen == r.ProcStart {
+	if known && c.start == r.ProcStart && time.Since(c.at) < recheckProcess {
 		return true
 	}
 	if !sameProcess(r.PID, r.ProcStart) {
 		return false
 	}
 	verified.Lock()
-	verified.start[r.PID] = r.ProcStart
+	verified.checks[r.PID] = processCheck{start: r.ProcStart, at: time.Now()}
 	verified.Unlock()
 	return true
 }
 
-func forget(pid int) {
+// forgetAllBut drops the checks of the processes that have no record any more.
+func forgetAllBut(pids map[int]bool) {
 	verified.Lock()
-	delete(verified.start, pid)
-	verified.Unlock()
+	defer verified.Unlock()
+	for pid := range verified.checks {
+		if !pids[pid] {
+			delete(verified.checks, pid)
+		}
+	}
 }
