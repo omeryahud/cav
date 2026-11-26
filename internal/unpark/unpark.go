@@ -67,20 +67,11 @@ func (s *Store) Has(id string) bool { return s.m[id] }
 
 // Add marks id and persists.
 func (s *Store) Add(id string) error {
-	_, err := s.Mark(id)
-	return err
-}
-
-// Mark marks id like Add and reports whether the mark is new. It judges that
-// from the file as read under the lock, so a mark another cav just wrote does
-// not count as new.
-func (s *Store) Mark(id string) (added bool, err error) {
-	err = s.update(func() bool {
-		added = !s.m[id]
+	return s.update(func() bool {
+		had := s.m[id]
 		s.m[id] = true
-		return added
+		return !had
 	})
-	return added && err == nil, err
 }
 
 // Remove unmarks id (back to the stopped window) and persists.
@@ -92,10 +83,8 @@ func (s *Store) Remove(id string) error {
 	})
 }
 
-// update reads the file, applies change and writes it back, all under a lock
-// every cav takes, so two cavs cannot drop each other's marks. change reports
-// whether it changed the set. When the write fails the set is put back, so
-// memory never holds a mark the file does not.
+// update reads, changes and writes the file under a lock every cav takes. A
+// failed write puts the set back: memory never holds a mark the file does not.
 func (s *Store) update(change func() (changed bool)) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
@@ -114,8 +103,7 @@ func (s *Store) update(change func() (changed bool)) error {
 }
 
 // lock takes an exclusive lock on path and returns the function that frees it.
-// If the lock cannot be taken, the caller goes on without it: a mark lost in a
-// rare race is better than no marks at all.
+// When it cannot, the caller goes on unlocked: better than no marks at all.
 func lock(path string) (unlock func()) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
@@ -140,9 +128,8 @@ func (s *Store) save() error {
 	return nil
 }
 
-// writeAtomic replaces path in one step, so another cav never reads a
-// half-written file. It returns the new file's modification time, taken before
-// the rename so it is this write's time and not a later writer's.
+// writeAtomic replaces path in one step, so no cav reads a half-written file.
+// It returns the file's modification time, taken before the rename.
 func writeAtomic(path string, b []byte) (time.Time, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
 	if err != nil {

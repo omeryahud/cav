@@ -28,8 +28,8 @@ func benchSessions(n int, now time.Time) ([]claude.Session, claude.Roster, []cla
 
 func benchModel(now time.Time) *Model {
 	sessions, roster, recs := benchSessions(80, now)
-	m := &Model{all: sessions, roster: roster, workers: workerActivities(sessions, roster, recs),
-		attached: map[string]bool{}, lastInUse: map[string]time.Time{}, autoStopping: map[string]time.Time{}}
+	m := &Model{all: sessions, roster: roster, auto: newAutoStopState()}
+	m.auto.workers, m.auto.attached = workerActivities(sessions, roster, recs), map[string]bool{}
 	m.cfg.AutoStop.After = 5 * time.Minute
 	return m
 }

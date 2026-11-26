@@ -429,8 +429,9 @@ visible at a glance.
 - **Auto-stop** (`autoStop.afterMs`, off by default; `internal/ui/autostop.go`):
   cav stops the worker of a session that has sat idle for that long, exactly
   as `z` would (`claude stop`, `unparked` mark, stays in the main pane as
-  ◌ stopped, `↵` respawns). It stops **one session per refresh**, and none
-  while a stop is still running (`m.autoStopBusy`), so every stop is picked
+  ◌ stopped, `↵` respawns). Its state between refreshes is `m.auto`
+  (`autoStopState`). It stops **one session per refresh**, and none
+  while a stop is still running (`busy`), so every stop is picked
   from fresh data: a session opened and left while a batch is worked through
   is seen. `autoStopTargets` picks a session only when **all** hold: its
   worker's status is exactly `idle` (`idleWorker`; busy or any status cav does
@@ -446,20 +447,22 @@ visible at a glance.
     (it holds still while a session idles; it can also hold still through a
     whole long turn, so it is not enough alone), the worker's start (a wake
     resets the clock), the last time cav saw the job **in use**
-    (`m.lastInUse`), and the **watch floor** (`m.autoStopFloor`). A record
+    (`lastInUse`), and the **watch floor** (`floor`). A record
     with no parsable `updatedAt` is never stopped.
   - *In use* (`stampInUse`, `markInUse`): a terminal is attached, the worker
     is not idle, it runs background work, or the previous refresh did not
-    show the worker at all (`m.hadWorker`: the list can miss a worker for a
+    show the worker at all (`hadWorker`: the list can miss a worker for a
     poll, and a worker cav did not see was not watched). cav sees these only
     by polling, and what it sees end ended somewhere between two polls, so a
-    job in use now **or at the previous refresh** (`m.wasInUse`) is stamped
+    job in use now **or at the previous refresh** (`wasInUse`) is stamped
     with the handling time. The window therefore runs from the first poll
     that sees the job free: a poll too long, never too short. cav's own flows
-    stamp exactly: `openCurrent` on open, and every exit path (attach end,
-    popup, pane, scratch) through `steppedOut` (`actionMsg.leftJob`). A stamp
-    only moves forward. An attach from another terminal that starts and ends
-    between two polls is never seen at all.
+    stamp exactly: `openCurrent` on open, every exit path (attach end,
+    popup, pane, scratch) through `steppedOut` (`actionMsg.leftJob`), and a
+    stop round that finds its target in use (`autoStopDone`: no refresh may
+    ever see that use). A stamp only moves forward. An attach from another
+    terminal that starts and ends between two polls, with no round running, is
+    never seen at all.
   - *Watch floor*: cav knows who was attached only while it was polling, so
     idle time from before its unbroken watch does not count. `keepWatch` moves
     the floor forward when a cav starts, when two refreshes are further apart
@@ -467,15 +470,19 @@ visible at a glance.
     refresh **cannot tell** (`watchedJobs` gives no attached set: `claude
     agents` failed, so there are no statuses, the process scan failed, or an
     agents view is open; the header then shows `auto-stop paused: <reason>`
-    from `m.watchErr`), and when a refresh is **stale**: every result carries
-    `at` (when `claude agents` returned, so it dates the statuses) and one
-    handled more than `autoStopMaxAge` (5s, plus `list.minRefreshMs`) later is
-    ignored. That happens because the refresh
+    from `watchErr`), and when a refresh is **stale**: every result carries
+    `at` (when `claude agents` returned, so it dates the statuses) and `done`
+    (when the refresh finished), and one handled more than `autoStopMaxAge`
+    (5s, plus `list.minRefreshMs`) after `done` is ignored. That happens
+    because the refresh
     channel is unbuffered and `tea.ExecProcess` (attach outside tmux, the logs
     pager) blocks the update loop, so the first result after stepping out
-    shows the world from before the attach. Idleness is measured against `at`,
-    not the handling time. `at` is wall clock only (`Round(0)`): the monotonic
-    clock stands still during a laptop sleep and would hide it.
+    shows the world from before the attach. The age counts from `done`, **not
+    from `at`**: on a loaded machine a refresh itself takes 2 to 7 seconds
+    (measured at load 30), and counting that made every refresh stale, so
+    auto-stop never ran exactly when the machine was slow. Idleness is
+    measured against `at`. Both are wall clock only (`Round(0)`): the
+    monotonic clock stands still during a laptop sleep and would hide it.
   - *Attached* = a running attach process (`claude.AttachTargets`, one `pgrep`
     per refresh, only when the feature is on).
     `claude attach` takes a job id **or part of a session name**, so the scan
@@ -483,19 +490,23 @@ visible at a glance.
     line counts from any binary, with any flags around it (the shell alias adds
     `--model …`). A name counts only when the command runs claude
     (`claudeArgs`: the program is known by its **base name**, `claude` or
-    `cli.js` in a claude-code package, among the first few words, so a script
-    that only lives under `~/.claude` is not claude): the text after `attach`,
+    `cli.js` in a claude-code package, so a script that only lives under
+    `~/.claude` is not claude. It stands before the `attach`/`agents` word,
+    among the first few non-flag words; a later path replaces it only right
+    after it, which is a program path with a space, so a path *argument*
+    named `…/claude` does not): the text after `attach`,
     its first word, and every word when flags stand among them (`attach
-    --model fable <name>`). `pgrep -fl` prints one process over
-    several lines when an argument holds a newline (cav's own attach wrapper is
-    about 25 lines), so ids are read per line and names per process
-    (`splitProcs`). `attachedJobs` maps targets to jobs (`targetsJob`: the
+    --model fable <name>`). The scan is `pgrep -fl -U <uid> -d <procSep>`:
+    only this user's processes, split by a separator that cannot be in a
+    command line, because an argument can hold a newline (cav's own attach
+    wrapper is about 25 lines). Ids are read per line, names per process.
+    `attachedJobs` maps targets to jobs (`targetsJob`: the
     start of the job or session id, or the daemon name contains the target).
     Every loose match errs toward "attached", which can only keep a session
     alive. If the scan fails the set is unknown (`nil`) and nothing is stopped.
   - *Native agents view*: `claude agents` opens sessions **inside its own
     process**, so no attach process shows which one is on screen. The same
-    scan (`pgrep -fl " (attach |agents)"`) therefore looks for a claude whose
+    scan (pattern `" (attach |agents)"`) therefore looks for a claude whose
     subcommand is `agents` (only flags and their values before it) without
     `--json` (that form only prints the list, as cav's own poll does). While
     one runs, `AttachTargets` returns `ErrAgentsView`: nothing is stopped, the
@@ -503,15 +514,19 @@ visible at a glance.
     A forgotten agents view keeps auto-stop paused: that is the price of not
     stopping a session someone is reading. Two more cases:
     - Stepping out of an attach with `←` turns the attach process into
-      `claude agents` for a moment, until cav's watchdog ends it. So a view
-      counts only if it is still there on a second look `agentsViewSettle`
-      (0.5s) later.
+      `claude agents` for a moment, until cav's watchdog ends it. So a **new**
+      view pid counts only if it is still there on a second look
+      `agentsViewSettle` (0.5s) later. A pid the last scan confirmed
+      (`knownViews`) needs no second look, so an open view does not slow
+      every refresh.
     - `←` in a **plain interactive claude** parks that conversation as a job
       and opens the view **inside the same process**: the command line shows
       nothing. Meanwhile the process keeps `parkedJobId` in its record
       `~/.claude/sessions/<pid>.json` (read in the CLI's code, 2.1.332; not
-      yet confirmed live). `parkedView` treats such a record of a live
-      process as an open view.
+      yet confirmed live). `parkedView` treats such a record as an open view
+      when the pid still is that process (`sameProcess`: the record's
+      `procStart` equals `TZ=UTC ps -o lstart`), so a record left by a crash
+      does not pause auto-stop once the pid is gone or reused.
   - *In flight* = `state.json`'s `inFlight.tasks` (background shells,
     subagents, monitors and scheduled wakeups, all verified). `inFlight.queued`
     is **not** counted: it rests above zero on sessions that do nothing. A
@@ -522,29 +537,24 @@ visible at a glance.
     The count can be **left over**: finished in-process teammates
     stay in it, and a record can keep a count from a process that is gone.
     cav cannot tell that from real work, so it never stops on a count above
-    zero, and the row shows why (`autoStopHint`: `N tasks` after the age,
-    only with auto-stop on). The name column gives up width for the hint
+    zero, and the row shows why (`autoStopHint`: `N tasks` or `1 task` after
+    the age, only with auto-stop on). The name column gives up width for the hint
     (`hintWidth`), and a row too narrow for the whole hint leaves it out.
-  A stop is issued once per job: `m.autoStopping` blocks a repeat for
+  A round is started once per job: `stopping` blocks a repeat for
   `autoStopRetry` (1 min). Right before the stop `autoStopCmd` checks the
   target again (`recheck`): the job record must be unchanged since the
   refresh (same `updatedAt`, nothing in flight), a fresh `claude agents` must
   still list the same worker (same `startedAt`, same job id) as `idle`, and a
   fresh process scan must show no attach. The status is asked again because
   the record lags: a session was seen `busy` for ten minutes with an
-  unchanged record. `autoStopDone` handles the outcome. A target found in use
-  is left running and must lose the `unparked` mark this round gave it
-  (`Store.Mark` tells whether the mark is new, judged from the file under the
-  lock). The mark goes only when a refresh taken **after** the round still
-  shows the worker (`m.unmarkPending`, `settleUnmarks`): if `x`, `z` or
-  another cav stopped the session meanwhile (state `stopped`), the mark is
-  what keeps it in the main pane. A refresh that shows neither settles
-  nothing, for up to a minute: the list can miss a worker for a poll.
-  A mark from before the round stays, and so does the mark of a
-  failed stop, which may still land. A job another cav already stopped is
-  left with its mark. When the mark cannot be saved, nothing is stopped
-  (`Store.update` puts the in-memory set back, so the next refresh fails the
-  same way). It only runs while a cav is open.
+  unchanged record. Only when the check passes does `stopInPlace` save the
+  `unparked` mark, through its own `unpark.Load()` store (the file lock makes
+  that safe), and then stop the worker: so a target left running never gets a
+  mark, and a mark that cannot be saved means no stop. The model picks the
+  mark up by `Reload` (in `autoStopDone` and on every refresh, before
+  `recompute`), so the session never flickers through the stopped window. Do
+  not move the mark back before the check: taking it away again is where
+  three review rounds found holes. It only runs while a cav is open.
   `d` on a session that was stopped in place and then resumed still finds its
   `unparked` mark. `removeOne` drops the mark and, unless that alone puts the
   session in the stopped window (`isStopped`), goes on as for any session: a

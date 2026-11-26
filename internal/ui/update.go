@@ -32,9 +32,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.worktrees = msg.worktrees
 		m.states = msg.states
 		m.live = msg.live
-		m.workers, m.attached, m.watchErr = msg.workers, msg.attached, msg.watchErr
+		m.auto.workers, m.auto.attached, m.auto.watchErr = msg.workers, msg.attached, msg.watchErr
 		m.unparked.Reload() // another cav may have stopped sessions and marked them to stay here
-		m.settleUnmarks(msg.at)
 		// First refresh: fold the tree if configured, then make sure the launch
 		// directory (selected since startup) is not hidden inside a folded repo.
 		if m.startupLayout {
@@ -128,7 +127,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.previewCmdFor(s))
 			}
 		}
-		if cmd := m.autoStopIdle(msg.at, time.Now()); cmd != nil {
+		if cmd := m.autoStopIdle(msg.at, msg.done, time.Now()); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 		return m, tea.Batch(cmds...)
@@ -1002,9 +1001,8 @@ func (m *Model) removeOne(s claude.Session) tea.Cmd {
 			m.err = err
 			return nil
 		}
-		// Without the mark a stopped session is back in the stopped window. A
-		// session that was stopped in place and then resumed still had the mark
-		// but is not stopped: it goes on to be stopped or dismissed like any other.
+		// A session resumed after a stop in place still had the mark but is
+		// not stopped: it goes on to be stopped or dismissed like any other.
 		if m.isStopped(s) {
 			m.status = "moved " + m.displayName(s) + " back to the stopped window (s)"
 			return nil

@@ -269,8 +269,8 @@ func (m *Model) indicators() string {
 	if m.otherCavs > 0 {
 		parts = append(parts, fmt.Sprintf("%d other cavs running", m.otherCavs))
 	}
-	if m.watchErr != nil {
-		parts = append(parts, "auto-stop paused: "+m.watchErr.Error())
+	if m.auto.watchErr != nil {
+		parts = append(parts, "auto-stop paused: "+m.auto.watchErr.Error())
 	}
 	return strings.Join(parts, "  ")
 }

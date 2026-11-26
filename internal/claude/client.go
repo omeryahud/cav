@@ -86,10 +86,8 @@ type JobRecord struct {
 	Name         string
 	State        string // working | done | blocked | stopped | ...
 	UpdatedAt    time.Time
-	// InFlight counts background work still running: shells, subagents, monitors
-	// and scheduled wakeups. The record's "queued" count is left out, because it
-	// rests above zero on sessions that are doing nothing. InFlightKnown is
-	// false when the record does not hold the count.
+	// InFlight counts running background work (the record's tasks, not its
+	// queued count, which rests above zero when idle). Known is false without a count.
 	InFlight      int
 	InFlightKnown bool
 }

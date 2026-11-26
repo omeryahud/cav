@@ -10,27 +10,43 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/omeryahud/cav/internal/claude"
+	"github.com/omeryahud/cav/internal/unpark"
 )
 
 const (
-	// autoStopRetry is how long an issued stop blocks another one for the same
-	// job, so a stop still in progress is not repeated on every refresh.
-	autoStopRetry = time.Minute
-	// autoStopMaxAge is how old a refresh may be when it is handled. An older
-	// one waited while the UI was blocked (a full-screen attach, a pager).
-	autoStopMaxAge = 5 * time.Second
-	// autoStopGapSlack is added to the idle poll interval. A longer pause
-	// between two refreshes means cav was not polling (suspended, or asleep).
-	autoStopGapSlack = 30 * time.Second
+	autoStopRetry    = time.Minute      // a stop round blocks another one for the same job this long
+	autoStopMaxAge   = 5 * time.Second  // an older refresh waited behind a blocked UI
+	autoStopGapSlack = 30 * time.Second // on top of the idle poll interval, before a pause counts as a gap
 	autoStopTimeout  = 10 * time.Second // for one claude call (list or stop)
 )
 
-// liveSessions and attachTargets are package variables so tests can stub the
-// `claude agents` call and the process scan.
+// Tests stub the `claude agents` call and the process scan.
 var (
 	liveSessions  = claude.List
 	attachTargets = claude.AttachTargets
 )
+
+// errListFailed pauses auto-stop when `claude agents` fails: with no statuses
+// cav cannot tell which session is busy.
+var errListFailed = errors.New("claude cannot list the sessions")
+
+// autoStopState is what auto-stop keeps between refreshes.
+type autoStopState struct {
+	workers   map[string]workerActivity // sessionId -> its live worker's activity
+	attached  map[string]bool           // job ids with a terminal attached; nil = unknown
+	watchErr  error                     // why the last refresh cannot be trusted: auto-stop is paused
+	hadWorker map[string]bool           // job ids with a live worker at the previous refresh
+	wasInUse  map[string]bool           // job ids in use at the previous refresh
+	lastInUse map[string]time.Time      // job id -> when it was last in use
+	stopping  map[string]time.Time      // job id -> when a stop round started for it
+	busy      bool                      // a stop round is running; the next waits for it
+	lastWatch time.Time                 // when the previous refresh was taken
+	floor     time.Time                 // start of cav's unbroken watch: idle time before it does not count
+}
+
+func newAutoStopState() autoStopState {
+	return autoStopState{lastInUse: map[string]time.Time{}, stopping: map[string]time.Time{}}
+}
 
 // workerActivity is what auto-stop needs to know about a session's live worker.
 type workerActivity struct {
@@ -44,14 +60,13 @@ type stopTarget struct {
 	sessionID, jobID, name string
 	updated                time.Time // the job record's last update
 	startedAt              int64     // the worker's start
-	marked                 bool      // this round added the keep-here mark
 }
 
 // autoStoppedMsg reports how a round ended for its one target.
 type autoStoppedMsg struct {
 	target  stopTarget
-	outcome int   // stillIdle (a stop was issued), alreadyDown or inUse
-	err     error // the stop failed
+	outcome int   // what the check right before the stop found
+	err     error // the stop was due and failed
 }
 
 // What the check right before a stop finds.
@@ -61,14 +76,12 @@ const (
 	inUse              // busy, attached, changed or unknown: leave it running
 )
 
-// idleWorker reports whether s has a running worker that is known to be idle.
-// Any other status (busy, or one cav does not know) is left alone.
+// idleWorker reports whether s has a worker known to be idle. Any other status
+// (busy, or one cav does not know) is left alone.
 func idleWorker(s claude.Session) bool { return s.Status == "idle" }
 
-// workerActivities returns, by session id, the activity of every session that
-// has a live worker and a job record that tells when it was last updated and
-// how much background work it runs. A session without an entry is never
-// auto-stopped.
+// workerActivities returns the activity of each live worker whose job record
+// tells its last update and its background work. Without an entry, no stop.
 func workerActivities(sessions []claude.Session, roster claude.Roster, recs []claude.JobRecord) map[string]workerActivity {
 	byJob := make(map[string]*claude.JobRecord, len(recs))
 	for i := range recs {
@@ -89,10 +102,8 @@ func workerActivities(sessions []claude.Session, roster claude.Roster, recs []cl
 	return out
 }
 
-// targetsJob reports whether one attach target points at a job: by the start
-// of its job or session id, or by part of its session's name (`claude attach`
-// takes an id or a name). A loose match is fine: it can only keep a session
-// alive.
+// targetsJob reports whether an attach target points at a job, by id or name.
+// The match is loose on purpose: it can only keep a session alive.
 func targetsJob(target, jobID, sessionID, name string) bool {
 	return strings.HasPrefix(jobID, target) || strings.HasPrefix(sessionID, target) ||
 		strings.Contains(strings.ToLower(name), target)
@@ -112,13 +123,8 @@ func attachedJobs(targets []string, sessions []claude.Session, roster claude.Ros
 	return out
 }
 
-// errListFailed is why auto-stop is paused when `claude agents` fails: with no
-// statuses cav cannot tell which session is busy.
-var errListFailed = errors.New("claude cannot list the sessions")
-
 // watchedJobs returns the jobs with a terminal attached, or why this refresh
-// cannot tell: the session list failed, the process scan failed, or a native
-// agents view is open. A refresh that cannot tell is one cav did not watch.
+// cannot tell. Such a refresh is one cav did not watch.
 func watchedJobs(listErr error, sessions []claude.Session, roster claude.Roster) (map[string]bool, error) {
 	if listErr != nil {
 		return nil, errListFailed
@@ -130,47 +136,43 @@ func watchedJobs(listErr error, sessions []claude.Session, roster claude.Roster)
 	return attachedJobs(targets, sessions, roster), nil
 }
 
-// keepWatch records the refresh taken at `at` and reports whether auto-stop may
-// act on it. cav knows what was in use only while it was polling. After a gap
-// (a refresh that waited behind a full-screen attach, one that could not tell,
-// a suspended cav, a laptop sleep) every session gets a full idle window again.
-func (m *Model) keepWatch(at, now time.Time) bool {
-	gap := at.Sub(m.lastWatch)
-	m.lastWatch = at
-	if m.attached == nil || now.Sub(at) > autoStopMaxAge+m.cfg.List.MinRefresh {
-		m.autoStopFloor = now
+// keepWatch reports whether auto-stop may act on the refresh taken at `at`
+// and finished at `done`. After a gap in cav's watch every window starts again.
+func (m *Model) keepWatch(at, done, now time.Time) bool {
+	a := &m.auto
+	gap := at.Sub(a.lastWatch)
+	a.lastWatch = at
+	// Staleness is the wait after the refresh was done, not the refresh's own
+	// length: a slow machine makes refreshes long, and must not block auto-stop.
+	if a.attached == nil || now.Sub(done) > autoStopMaxAge+m.cfg.List.MinRefresh {
+		a.floor = now // cannot tell, or the refresh waited behind a blocked UI
 		return false
 	}
 	if gap > m.cfg.List.IdleRefresh+autoStopGapSlack {
-		m.autoStopFloor = at
+		a.floor = at // cav was suspended, or the laptop slept
 	}
 	return true
 }
 
-// steppedOut is the message every way out of a session ends in (the attach
-// ending, a tmux popup, pane or scratch closing): the back-note, and the job
-// that was left, so its idle window starts again.
+// steppedOut is the message every way out of a session ends in. It names the
+// job that was left, so its idle window starts again.
 func steppedOut(note, jobID string) actionMsg {
 	return actionMsg{note: note, leftJob: jobID}
 }
 
 // markInUse records that a job was in use at t. A stamp only moves forward.
 func (m *Model) markInUse(jobID string, t time.Time) {
-	if jobID != "" && t.After(m.lastInUse[jobID]) {
-		m.lastInUse[jobID] = t
+	if jobID != "" && t.After(m.auto.lastInUse[jobID]) {
+		m.auto.lastInUse[jobID] = t
 	}
 }
 
-// stampInUse notes every job this refresh shows in use: a terminal is
-// attached, its worker is not idle, it runs background work, or the previous
-// refresh did not show its worker at all (cav did not watch it then: the list
-// can miss a worker for a poll). A job in use now or at the previous refresh
-// was in use until about now, because what just ended did so somewhere between
-// the two polls. So the idle window starts at the first poll that sees the job
-// free, never earlier than the real moment.
+// stampInUse stamps each job in use now or at the previous refresh: what just
+// ended did so between the two polls, so the window starts at the later one.
 func (m *Model) stampInUse(now time.Time) {
+	a := &m.auto
 	inUse, workers := map[string]bool{}, map[string]bool{}
-	for jid := range m.attached {
+	for jid := range a.attached {
 		inUse[jid] = true
 	}
 	for _, s := range m.all {
@@ -179,24 +181,23 @@ func (m *Model) stampInUse(now time.Time) {
 		}
 		jid := m.roster[s.SessionID]
 		workers[jid] = true
-		if !idleWorker(s) || m.workers[s.SessionID].inFlight > 0 || !m.hadWorker[jid] {
+		// A worker the previous refresh did not show was not watched then.
+		if !idleWorker(s) || a.workers[s.SessionID].inFlight > 0 || !a.hadWorker[jid] {
 			inUse[jid] = true
 		}
 	}
-	for _, jobs := range []map[string]bool{m.wasInUse, inUse} {
+	for _, jobs := range []map[string]bool{a.wasInUse, inUse} {
 		for jid := range jobs {
 			m.markInUse(jid, now)
 		}
 	}
-	m.wasInUse, m.hadWorker = inUse, workers
+	a.wasInUse, a.hadWorker = inUse, workers
 }
 
-// idleSince is the latest moment the session may have been in use: its own
-// activity, the last time cav saw it in use, or the start of cav's unbroken
-// watch.
+// idleSince is the latest moment the session may have been in use.
 func (m *Model) idleSince(jobID string, w workerActivity) time.Time {
 	since := w.last
-	for _, t := range []time.Time{m.lastInUse[jobID], m.autoStopFloor} {
+	for _, t := range []time.Time{m.auto.lastInUse[jobID], m.auto.floor} {
 		if t.After(since) {
 			since = t
 		}
@@ -205,26 +206,26 @@ func (m *Model) idleSince(jobID string, w workerActivity) time.Time {
 }
 
 // autoStopTargets returns the sessions whose worker should be stopped, judged
-// at the time of the refresh: idle for autoStop.afterMs, with no terminal
-// attached and no background work.
+// at the time of the refresh.
 func (m *Model) autoStopTargets(at time.Time) []stopTarget {
+	a := &m.auto
 	after := m.cfg.AutoStop.After
-	if after <= 0 || m.attached == nil {
-		return nil // off, or we could not tell who is attached
+	if after <= 0 || a.attached == nil {
+		return nil // off, or cav cannot tell who is attached
 	}
 	var out []stopTarget
 	for _, s := range m.all {
 		jid := m.roster[s.SessionID]
-		w, known := m.workers[s.SessionID]
-		if !idleWorker(s) || !known || w.inFlight > 0 || m.attached[jid] || m.justStopped[s.SessionID] {
+		w, known := a.workers[s.SessionID]
+		if !idleWorker(s) || !known || w.inFlight > 0 || a.attached[jid] || m.justStopped[s.SessionID] {
 			continue
 		}
-		// Stop a job only when claude itself names it as this worker's job. A
-		// job id guessed from the on-disk records can belong to another session.
+		// Only a job id claude itself lists for the worker is safe to stop: one
+		// guessed from the on-disk records can belong to another session.
 		if s.JobID == "" || s.JobID != jid {
 			continue
 		}
-		if _, stopping := m.autoStopping[jid]; stopping {
+		if _, stopping := a.stopping[jid]; stopping {
 			continue
 		}
 		if at.Sub(m.idleSince(jid, w)) >= after {
@@ -235,35 +236,26 @@ func (m *Model) autoStopTargets(at time.Time) []stopTarget {
 	return out
 }
 
-// autoStopIdle stops one worker autoStopTargets picks, the way z does: the
-// session stays in the main pane as stopped, and ↵ respawns it. It stops one
-// session per refresh, and none while a stop is still running, so every stop
-// is picked from fresh data. at is when the refresh was taken and now is when
-// it is handled.
-func (m *Model) autoStopIdle(at, now time.Time) tea.Cmd {
-	if m.cfg.AutoStop.After <= 0 || !m.keepWatch(at, now) {
+// autoStopIdle starts a stop round for one idle session. One per refresh, and
+// none while a round runs, so every stop is picked from fresh data.
+func (m *Model) autoStopIdle(at, done, now time.Time) tea.Cmd {
+	a := &m.auto
+	if m.cfg.AutoStop.After <= 0 || !m.keepWatch(at, done, now) {
 		return nil
 	}
 	m.stampInUse(now)
-	for jid, issued := range m.autoStopping {
-		if now.Sub(issued) > autoStopRetry {
-			delete(m.autoStopping, jid)
+	for jid, started := range a.stopping {
+		if now.Sub(started) > autoStopRetry {
+			delete(a.stopping, jid)
 		}
 	}
 	targets := m.autoStopTargets(at)
-	if m.autoStopBusy || len(targets) == 0 {
+	if a.busy || len(targets) == 0 {
 		return nil
 	}
-	t := targets[0]
-	added, err := m.unparked.Mark(t.sessionID)
-	if err != nil {
-		m.err = err
-		return nil
-	}
-	t.marked = added
-	m.autoStopping[t.jobID] = now
-	m.autoStopBusy = true
-	return autoStopCmd(t)
+	a.stopping[targets[0].jobID] = now
+	a.busy = true
+	return autoStopCmd(targets[0])
 }
 
 // autoStopCmd checks the target once more and stops its worker.
@@ -271,67 +263,40 @@ func autoStopCmd(t stopTarget) tea.Cmd {
 	return func() tea.Msg {
 		msg := autoStoppedMsg{target: t, outcome: recheck(t)}
 		if msg.outcome == stillIdle {
-			ctx, cancel := context.WithTimeout(context.Background(), autoStopTimeout)
-			defer cancel()
-			msg.err = claude.Stop(ctx, t.jobID)
+			msg.err = stopInPlace(t)
 		}
 		return msg
 	}
 }
 
-// autoStopDone handles the end of a round. A target found in use keeps
-// running, so the mark this round gave it must go, but only once a later
-// refresh still shows its worker (see settleUnmarks). A failed stop keeps its
-// mark: the stop may still land.
+// stopInPlace stops the worker the way z does. The keep-here mark is saved
+// first: without it the stopped session would jump to the stopped window.
+func stopInPlace(t stopTarget) error {
+	if err := unpark.Load().Add(t.sessionID); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), autoStopTimeout)
+	defer cancel()
+	return claude.Stop(ctx, t.jobID)
+}
+
+// autoStopDone handles the end of a round.
 func (m *Model) autoStopDone(msg autoStoppedMsg, now time.Time) {
-	m.autoStopBusy = false
+	m.auto.busy = false
+	t := msg.target
 	switch {
-	case msg.outcome == inUse && msg.target.marked:
-		m.unmarkPending[msg.target.sessionID] = now
+	case msg.outcome == inUse:
+		m.markInUse(t.jobID, now) // only this check saw the use: no refresh will
 	case msg.outcome == stillIdle && msg.err != nil:
 		m.status = "auto-stop failed: " + msg.err.Error()
 	case msg.outcome == stillIdle:
-		t := msg.target
+		m.unparked.Reload() // the round saved the mark through its own store
 		m.status = "auto-stopped " + m.displayName(claude.Session{SessionID: t.sessionID, Name: t.name})
 	}
 }
 
-// settleUnmarks drops the keep-here mark of each target a round left running,
-// once a refresh taken after that round still shows its worker. A session that
-// was stopped meanwhile (by x, z or another cav) keeps the mark, which is what
-// keeps it in the main pane. A refresh that shows neither settles nothing: the
-// list can miss a worker for a poll. After autoStopRetry the mark just stays.
-func (m *Model) settleUnmarks(at time.Time) {
-	for sid, since := range m.unmarkPending {
-		if !at.After(since) {
-			continue
-		}
-		switch s, found := m.session(sid); {
-		case found && hasLiveWorker(s):
-			if err := m.unparked.Remove(sid); err != nil {
-				m.err = err
-			}
-		case found && m.states[sid] != "stopped" && at.Sub(since) < autoStopRetry:
-			continue // not known yet
-		}
-		delete(m.unmarkPending, sid)
-	}
-}
-
-func (m *Model) session(sessionID string) (claude.Session, bool) {
-	for _, s := range m.all {
-		if s.SessionID == sessionID {
-			return s, true
-		}
-	}
-	return claude.Session{}, false
-}
-
-// recheck looks at a target again just before its stop, because the refresh
-// that picked it is a few seconds old and a job record can lag behind a turn
-// that just started. The record must be unchanged, claude must still list the
-// same worker as idle, and no terminal may be attached. Anything that cannot be
-// read counts as in use. The attach scan runs last, so it is the freshest.
+// recheck looks at a target again just before its stop: the refresh is a few
+// seconds old. Cheap checks first, the attach scan last so it is the freshest.
 func recheck(t stopTarget) int {
 	rec, ok := claude.ReadJob(t.jobID)
 	switch {
@@ -344,8 +309,8 @@ func recheck(t stopTarget) int {
 	return stillIdle
 }
 
-// listedIdle asks claude for the live sessions again and reports whether the
-// target still has the same worker and it is idle.
+// listedIdle asks claude again whether the target still has the same idle
+// worker under the same job. A job record can lag behind a turn that just started.
 func listedIdle(t stopTarget) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), autoStopTimeout)
 	defer cancel()
@@ -361,8 +326,7 @@ func listedIdle(t stopTarget) bool {
 	return false
 }
 
-// attachedNow scans the processes again. A scan that cannot tell (it failed,
-// or a native agents view is open) counts as attached.
+// attachedNow scans the processes again. A scan that cannot tell counts as attached.
 func attachedNow(t stopTarget) bool {
 	targets, err := attachTargets()
 	if err != nil {
@@ -376,14 +340,17 @@ func attachedNow(t stopTarget) bool {
 	return false
 }
 
-// autoStopHint says, on a session's row, why auto-stop leaves an idle worker
-// running: its job record counts background tasks. The count can be left over
-// from work that has ended, and cav cannot tell, so it never stops on it.
+// autoStopHint says on a row why an idle worker is kept: its record counts
+// background tasks. The count can be left over, and cav cannot tell.
 func (m *Model) autoStopHint(s claude.Session) string {
-	if n := m.workers[s.SessionID].inFlight; m.cfg.AutoStop.After > 0 && idleWorker(s) && n > 0 {
-		return fmt.Sprintf("  %d tasks", n)
+	n := m.auto.workers[s.SessionID].inFlight
+	switch {
+	case m.cfg.AutoStop.After <= 0 || !idleWorker(s) || n == 0:
+		return ""
+	case n == 1:
+		return "  1 task"
 	}
-	return ""
+	return fmt.Sprintf("  %d tasks", n)
 }
 
 // hintWidth is the width of the longest auto-stop hint among the visible rows.

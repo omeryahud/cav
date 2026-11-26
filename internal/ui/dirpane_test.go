@@ -49,9 +49,8 @@ func nodeAt(nodes []dirNode, path string) (dirNode, bool) {
 	return dirNode{}, false
 }
 
-// A job record can lack its cwd. As a tree path the empty string also means
-// "no parent", which made the tree builder recurse without end and crash cav.
-// Such a session shows only under "all".
+// A record with no cwd made the tree builder recurse without end ("" also
+// means "no parent"). Such a session shows only under "all".
 func TestTreeLeavesOutASessionWithNoDirectory(t *testing.T) {
 	repo := "/r/cav"
 	m := treeModel(t, repo, []claude.Worktree{{Path: repo, Branch: "master"}}, repo, "")

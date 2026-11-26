@@ -105,6 +105,7 @@ type (
 		attached  map[string]bool           // job ids with a terminal attached; nil = unknown
 		watchErr  error                     // why auto-stop cannot trust this refresh (set only when it asked)
 		at        time.Time                 // when the session statuses were read
+		done      time.Time                 // when the refresh finished
 	}
 	errMsg    struct{ err error }
 	actionMsg struct {
@@ -172,17 +173,7 @@ type Model struct {
 	groupDefault   grouping                  // configured startup mode; the header flags any other mode
 	stoppedView    bool                      // true: showing the stopped-sessions window (s toggles)
 	justStopped    map[string]bool           // just stopped from the main window; kept in the stopped window until reconciled
-	workers        map[string]workerActivity // sessionId -> its live worker's activity (auto-stop)
-	attached       map[string]bool           // job ids with a terminal attached; nil = unknown (auto-stop)
-	watchErr       error                     // why auto-stop cannot trust the last refresh: it is paused while this is set
-	wasInUse       map[string]bool           // job ids in use at the previous refresh (auto-stop)
-	lastInUse      map[string]time.Time      // job id -> when it was last in use: attached, opened, not idle, or with background work
-	autoStopping   map[string]time.Time      // job id -> when auto-stop issued its stop
-	autoStopBusy   bool                      // an auto-stop round is running; the next waits for it
-	unmarkPending  map[string]time.Time      // session id -> when a round left it running (see settleUnmarks)
-	hadWorker      map[string]bool           // job ids with a live worker at the previous refresh (auto-stop)
-	lastWatch      time.Time                 // when the previous refresh was taken (auto-stop)
-	autoStopFloor  time.Time                 // start of cav's unbroken watch; idle time before it does not count
+	auto           autoStopState             // what auto-stop keeps between refreshes
 	cfg            config.Config             // settings from ~/.config/cav/config.json (defaults when absent)
 	seen           *seen.Store               // persisted cache: sessionId -> last name seen (survives restart + transient drops)
 	cursor         int
@@ -285,9 +276,7 @@ func New(opts Options) (*Model, error) {
 		prevReq:       map[string]bool{},
 		states:        map[string]string{},
 		justStopped:   map[string]bool{},
-		lastInUse:     map[string]time.Time{},
-		autoStopping:  map[string]time.Time{},
-		unmarkPending: map[string]time.Time{},
+		auto:          newAutoStopState(),
 		pendingClone:  map[string]string{},
 		seen:          seen.Load(),
 	}, nil
@@ -345,9 +334,8 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 	liveSet := map[string]bool{} // sessionIds with a live daemon worker
 	var sessions []claude.Session
 
-	// 1) Live sessions — the job id comes from the listing itself when claude
-	//    gives it (newer versions do), else from the daemon roster, which holds
-	//    the CURRENT sessionId even after a /branch (a job's state.json can lag).
+	// 1) Live sessions — the job id comes from the listing when claude gives it,
+	//    else from the daemon roster (current even after a /branch; state.json can lag).
 	for _, s := range live {
 		if s.Kind == "interactive" {
 			// cav manages background sessions. Interactive workers (a `!` bash
@@ -415,6 +403,7 @@ func doRefresh(launchDir string, watchAttached bool) refreshResult {
 	if watchAttached {
 		rr.attached, rr.watchErr = watchedJobs(listErr, sessions, roster)
 	}
+	rr.done = time.Now().Round(0)
 	return rr
 }
 
