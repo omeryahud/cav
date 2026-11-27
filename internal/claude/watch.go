@@ -3,53 +3,61 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
 
+// statEvery is how often the files replaced by a rename are checked. Tests shorten it.
+var statEvery = time.Second
+
 // Watcher tells when claude changes the files cav reads its sessions from, so
 // cav can refresh on a change and not on a timer.
 type Watcher struct {
-	fs      *fsnotify.Watcher
-	changed chan struct{}
-	root    string          // ~/.claude
-	extra   map[string]bool // files outside root whose change matters too
-	base    []string        // the directories watched from the start
-	jobs    map[string]bool // the job directories watched
-	// replaced holds the files written by a rename, with the inode each had
-	// when its watch was set: a new inode means a watch to set again.
-	replaced map[string]uint64
+	fs       *fsnotify.Watcher
+	changed  chan struct{}
+	sessions string   // the process records: written in place, so fsnotify follows them
+	dirs     []string // the directories fsnotify watches
+
+	// stamps holds the files that are replaced by a rename. On kqueue fsnotify
+	// can stop following such a file, so these are checked with stat.
+	mu     sync.Mutex
+	stamps map[string]fileStamp
+	keep   map[string]bool // checked even while they do not exist
 }
 
-// NewWatcher watches the process records, the roster, the attach journal, the
-// list of jobs and the extra files. It fails when the process records are not there.
+// fileStamp tells one version of a file from the next. It is zero for no file.
+type fileStamp struct {
+	inode   uint64
+	size    int64
+	modTime int64
+}
+
+// NewWatcher watches the process records, the attach journal, the list of
+// jobs, the roster and the extra files. It fails when it cannot watch the records.
 func NewWatcher(extra ...string) (*Watcher, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, err
-	}
-	root := filepath.Join(home, ".claude")
-	sessions := filepath.Join(root, "sessions")
-	if _, err := os.Stat(sessions); err != nil {
 		return nil, err
 	}
 	fs, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
-	w := &Watcher{fs: fs, changed: make(chan struct{}, 1), root: root, extra: map[string]bool{},
-		base: []string{sessions}, jobs: map[string]bool{}, replaced: map[string]uint64{}}
-	for _, dir := range []string{"daemon", "daemon/attach-journal", "jobs"} {
-		w.base = append(w.base, filepath.Join(root, dir))
+	root := filepath.Join(home, ".claude")
+	w := &Watcher{fs: fs, changed: make(chan struct{}, 1), sessions: filepath.Join(root, "sessions"),
+		stamps: map[string]fileStamp{}, keep: map[string]bool{}}
+	if err := fs.Add(w.sessions); err != nil {
+		fs.Close()
+		return nil, err
 	}
-	for _, file := range extra {
-		w.extra[file] = true
-		w.base = append(w.base, filepath.Dir(file))
-	}
-	for _, file := range append(extra, filepath.Join(root, "daemon", "roster.json")) {
-		w.replaced[file] = inode(file)
+	w.dirs = []string{w.sessions, filepath.Join(root, "daemon", "attach-journal"), filepath.Join(root, "jobs")}
+	for _, file := range append([]string{filepath.Join(root, "daemon", "roster.json")}, extra...) {
+		w.stamps[file], w.keep[file] = stampOf(file), true
 	}
 	w.Repair()
 	go w.run()
@@ -62,64 +70,69 @@ func (w *Watcher) Changed() <-chan struct{} { return w.changed }
 // Close stops the watch.
 func (w *Watcher) Close() { w.fs.Close() }
 
-// TrackJobs also watches the records of these jobs. A job stays watched after
-// its worker ends: fsnotify cannot give a directory back to its parent's watch.
+// TrackJobs also checks the records of these jobs. A job is checked until its
+// directory is gone: claude still writes the last state after the worker ends.
 func (w *Watcher) TrackJobs(ids []string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	for _, id := range ids {
-		dir := filepath.Join(w.root, "jobs", id)
-		if w.jobs[dir] {
-			continue
-		}
-		state := filepath.Join(dir, "state.json")
-		seen := inode(state)
-		if w.fs.Add(dir) == nil {
-			w.jobs[dir], w.replaced[state] = true, seen
+		state := filepath.Join(filepath.Dir(w.sessions), "jobs", id, "state.json")
+		if _, tracked := w.stamps[state]; !tracked {
+			w.stamps[state] = stampOf(state)
 		}
 	}
 }
 
-// Repair sets up again what the watch lost, before the files are read. On
-// kqueue, fsnotify can stop following a file that two renames replace in a row.
+// Repair watches a directory that was not there before: one made after cav
+// started, or removed and made again.
 func (w *Watcher) Repair() {
-	watched := map[string]bool{}
-	for _, dir := range w.fs.WatchList() {
-		watched[dir] = true
-	}
-	for _, dir := range w.base {
-		if !watched[dir] {
+	watched := w.fs.WatchList()
+	for _, dir := range w.dirs {
+		if !slices.Contains(watched, dir) {
 			_ = w.fs.Add(dir) // not there on every claude version
 		}
 	}
-	for dir := range w.jobs {
-		if !watched[dir] && w.fs.Add(dir) != nil {
-			delete(w.jobs, dir)
-			delete(w.replaced, filepath.Join(dir, "state.json"))
-		}
-	}
-	for file, seen := range w.replaced {
-		if now := inode(file); now != seen {
-			_ = w.fs.Remove(file)
-			if now != 0 {
-				_ = w.fs.Add(file)
-			}
-			w.replaced[file] = now
-		}
-	}
 }
 
-// inode identifies the file at path now, 0 when there is none.
-func inode(path string) uint64 {
+func stampOf(path string) fileStamp {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return 0
+		return fileStamp{}
 	}
+	s := fileStamp{size: fi.Size(), modTime: fi.ModTime().UnixNano()}
 	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		return uint64(st.Ino)
+		s.inode = uint64(st.Ino)
 	}
-	return 0
+	return s
+}
+
+// replaced reports whether a checked file changed since the last look, and
+// stops checking the record of a job that is gone.
+func (w *Watcher) replaced() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	changed := false
+	for file, seen := range w.stamps {
+		now := stampOf(file)
+		if now != seen {
+			changed = true
+			w.stamps[file] = now
+		}
+		if now == (fileStamp{}) && !w.keep[file] && !exists(filepath.Dir(file)) {
+			delete(w.stamps, file)
+		}
+	}
+	return changed
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func (w *Watcher) run() {
+	tick := time.NewTicker(statEvery)
+	defer tick.Stop()
 	for {
 		select {
 		case ev, ok := <-w.fs.Events:
@@ -133,6 +146,11 @@ func (w *Watcher) run() {
 			if !ok {
 				return
 			}
+			w.notify() // an event may be lost: look again
+		case <-tick.C:
+			if w.replaced() {
+				w.notify()
+			}
 		}
 	}
 }
@@ -144,26 +162,14 @@ func (w *Watcher) notify() {
 	}
 }
 
-// matters reports whether an event is a change cav shows. A job's timeline
-// grows on every tool call, and cav does not read it.
+// matters reports whether an event is a change cav shows. Next to each
+// process record lies a key file that cav does not read.
 func (w *Watcher) matters(ev fsnotify.Event) bool {
 	if ev.Op == fsnotify.Chmod {
 		return false
 	}
-	if w.extra[ev.Name] {
-		return true
+	if filepath.Dir(ev.Name) == w.sessions {
+		return strings.HasSuffix(ev.Name, ".json")
 	}
-	name := filepath.Base(ev.Name)
-	switch dir, _ := filepath.Rel(w.root, filepath.Dir(ev.Name)); dir {
-	case "sessions":
-		return strings.HasSuffix(name, ".json")
-	case "daemon":
-		return strings.HasPrefix(name, "roster.json")
-	case "daemon/attach-journal", "jobs":
-		return true
-	default:
-		// A job directory. The temp file of a replace counts too: it is seen
-		// even when the watch on the record itself is lost.
-		return strings.HasPrefix(name, "state.json")
-	}
+	return true // the attach journal, and a job that appears or goes
 }

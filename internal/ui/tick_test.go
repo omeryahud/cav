@@ -41,6 +41,22 @@ func TestTheTickRunsOnlyWhileTheScreenNeedsIt(t *testing.T) {
 	}
 }
 
+// An age counts in seconds for one minute. After that the tick must stop:
+// nothing on the screen moves on time any more.
+func TestTheTickStopsOnceEveryAgeIsPastAMinute(t *testing.T) {
+	m := openModel(t, "aaa")
+	m.all[0].StartedAt = time.Now().Add(-59 * time.Second).UnixMilli()
+	m.feedRefresh()
+	if !m.ticking {
+		t.Fatal("an age of 59s counts in seconds: the tick must run")
+	}
+
+	m.view[0].StartedAt = time.Now().Add(-61 * time.Second).UnixMilli()
+	if _, cmd := m.Update(tickMsg{}); cmd != nil || m.ticking {
+		t.Error("every age is past a minute: the tick must stop")
+	}
+}
+
 // Two ticks at once would double the preview loads.
 func TestOnlyOneTickRunsAtATime(t *testing.T) {
 	m := openModel(t, "aaa")
@@ -103,6 +119,19 @@ func TestPreviewReloadWaitsForARunningLoadAndBacksOffWhenIdle(t *testing.T) {
 	}
 }
 
+// list.idleAfterMs 0 turns the idle backoff off, for the preview too.
+func TestPreviewNeverBacksOffWhenTheIdleBackoffIsOff(t *testing.T) {
+	m, _ := previewModel(t)
+	m.act.last.Store(time.Now().Add(-10 * time.Minute).UnixMilli())
+	if got := m.previewInterval(); got != m.cfg.List.IdleRefresh {
+		t.Fatalf("the user is away: interval = %v, want the idle interval", got)
+	}
+	m.cfg.List.IdleAfter = 0
+	if got := m.previewInterval(); got != m.cfg.Preview.Refresh {
+		t.Errorf("idle backoff off: interval = %v, want preview.refreshMs", got)
+	}
+}
+
 func TestRAsksTheLoopForAFullRefresh(t *testing.T) {
 	m := openModel(t, "aaa")
 	m.act = newActivity()
@@ -135,11 +164,37 @@ func TestANewSessionAlreadyListedIsHighlightedAtOnce(t *testing.T) {
 	}
 
 	// `cav -n -a`: the same moment opens the session.
+	t.Setenv("HOME", t.TempDir()) // opening a session may write the trust flag
+	t.Setenv("TMUX", "")
 	m = openModel(t, "aaa", "fresh")
 	m.attachNew = true
 	m.Update(listed)
 	if _, cmd := m.Update(createdMsg{jobID: "job1", label: "fresh"}); cmd == nil || m.attachNew {
 		t.Errorf("-a: command = %v, attachNew = %v; want an attach, used up", cmd != nil, m.attachNew)
+	}
+}
+
+// A new job is listed from its job record before its worker runs. Opening it
+// then would respawn a worker that is starting, so `cav -n -a` must wait.
+func TestAttachNewWaitsForTheWorker(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // opening a session may write the trust flag
+	t.Setenv("TMUX", "")
+	m := openModel(t, "aaa", "fresh")
+	fresh := m.all[1].SessionID
+	listing := func(live bool) refreshResult {
+		return refreshResult{sessions: m.all, roster: claude.Roster{fresh: "job1"},
+			states: map[string]string{}, live: map[string]bool{fresh: live}}
+	}
+	m.attachNew = true
+	m.Update(listing(false))
+
+	m.Update(createdMsg{jobID: "job1", label: "fresh"})
+	if !m.attachNew || m.selectJobID != "job1" {
+		t.Fatalf("no worker yet: attachNew = %v, selectJobID = %q; want both kept for the next refresh", m.attachNew, m.selectJobID)
+	}
+	m.Update(listing(true))
+	if cur := m.current(); m.attachNew || m.selectJobID != "" || cur == nil || cur.SessionID != fresh {
+		t.Errorf("the worker runs: attachNew = %v, selectJobID = %q, cursor on %+v; want the session opened", m.attachNew, m.selectJobID, cur)
 	}
 }
 

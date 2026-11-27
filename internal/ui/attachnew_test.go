@@ -10,6 +10,8 @@ import (
 // refresh handler must attach to it — returning a non-nil exec command — and
 // consume the flag so stepping out doesn't re-attach.
 func TestAttachNewAttachesOnRegistration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // opening a session may write the trust flag
+	t.Setenv("TMUX", "")
 	m := openModel(t, "fresh")
 	sid := m.all[0].SessionID
 	m.selectJobID = "job1"

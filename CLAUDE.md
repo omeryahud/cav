@@ -45,8 +45,8 @@ after.
     `JobRecord`/`ScanJobs`.
   - `sessions.go`: `LiveSessions`/`LiveSession`, the live workers read from
     claude's process records with no CLI call.
-  - `watch.go`: `Watcher`, file events (fsnotify) on the files cav reads, and
-    `Repair`, which sets a lost watch up again.
+  - `watch.go`: `Watcher`, file events (fsnotify) on the files claude writes
+    in place, and a one-second `stat` check of the files it replaces by a rename.
   - `attached.go`: `AttachTargets`, the process scan auto-stop uses.
   - `git.go` — git worktree access for the directory tree (`RepoRoot`,
     `Worktrees`, `DefaultBranch`, `AddWorktree`, `RemoveWorktree`).
@@ -118,14 +118,21 @@ bulk of the work. Don't "simplify" back to a single source.
    (`listedStatus`): `idle` and `waiting` stay, anything else is `busy`. That
    includes **no status yet**: a worker that starts cold writes its record
    without one for about a second. A record whose pid is gone or was reused is
-   skipped; the `ps` check runs once per process and again every
-   `recheckProcess` (1 min), because a pid can go to another process. A record
+   skipped. The pid is checked with `kill 0` on every read, and its start time
+   with **one `ps` for all workers** (`liveProcesses`), again every
+   `recheckProcess` (1 min), because a pid can go to another process. Both
+   answers are remembered, "not the same process" too. When `ps` fails (it
+   lists every pid that runs, so a missing one means it failed) the last
+   answer stands, and a worker seen for the first time is trusted. A record
    that does not parse is skipped when its process (the file name is the pid)
-   has ended. For a running process it is read once more after `recordRetry`
-   (records are rewritten in place, so a read can land in a write).
-   ⚠️ These files are internal to claude, not a documented interface: a shape
-   cav does not know (still unparsable, or a worker with no job or session id)
-   makes `LiveSessions` report `ok = false` and that refresh asks the CLI.
+   has ended. For a running process it is read once more (`retryRecord`:
+   records are rewritten in place, so a read can land in a write).
+   ⚠️ These files are internal to claude, not a documented interface. When cav
+   cannot tell, `LiveSessions` reports `ok = false` and that refresh asks the
+   CLI: the directory or a record cannot be read, a record of a running
+   process still does not parse, or a worker has no session id or a job id
+   that is not 8 hex digits (`workerJobID`; the id is used as a directory
+   name, so `..` must never pass).
 
 **`attach` / `stop` / `logs` key on the JOB ID** (the short id = jobs/ dir name =
 roster worker key), **NOT the full session UUID**. They coincide for most
@@ -135,39 +142,44 @@ sessions but differ after branch/respawn (e.g. session `72cdfc0f` ↔ job
 `doRefresh` (in `model.go`) merges them in a background goroutine
 (`refreshLoop`); results flow to the update loop via a channel (`waitRefresh`),
 which re-arms itself each time. **A refresh is driven by file events, not by a
-timer** (`claude.Watcher`, fsnotify/kqueue on `sessions/`, `daemon/` (the
-roster and the attach journal), `jobs/`, the job directories of the sessions
-that had a worker while this cav runs, and cav's own `unparked.json`): cav
-sleeps until one of those files changes, `r` is pressed, or `eventInterval`
-passes (`list.safetyPollMs`, 60s; `list.idleRefreshMs`, 10s, when auto-stop is
-on, because an attach leaves no file and auto-stop needs a steady scan). A
-keypress alone starts no refresh. The details that matter:
-- **One write, one refresh.** A record replaced by a rename gives two events
-  (remove, create). After an event the loop waits `list.minRefreshMs`
-  (`settle`) and takes the events that came meanwhile, so it refreshes once
-  and reads the finished file.
-- **The watch is repaired before every refresh** (`Watcher.Repair`). On
-  kqueue, fsnotify can stop following a file that is replaced by a rename
-  twice in a row (reproduced: 40 quick replaces of a `state.json`, then no
-  event at all). So the watcher remembers the inode of each such file (job
-  records, the roster, `unparked.json`); a new inode means the watch on that
-  file is removed and added again (one open; with the fix, 8 of 8 runs of
-  that test pass, without it half fail). The temp file of a replace
-  (`state.json.tmp.*`) also counts as a change, because it is seen even when
-  the watch on the record is lost. `Repair` also adds a directory that was
-  made after cav started (`daemon/attach-journal`, `jobs`, a `sessions`
-  directory that was removed and made again).
-- **A job is watched from the moment its worker shows in the records**, before
+timer** (`claude.Watcher`): cav sleeps until a file it reads changes, `r` is
+pressed, or `eventInterval` passes (`list.safetyPollMs`, 60s;
+`list.idleRefreshMs`, 10s, when auto-stop is on, because an attach leaves no
+file and auto-stop needs a steady scan). A keypress alone starts no refresh.
+The watcher has two parts, by how claude writes each file:
+- **fsnotify (kqueue)** for what is written in place, created or deleted: the
+  process records in `sessions/` (a status change rewrites the record in
+  place), `daemon/attach-journal/`, and `jobs/` (a job appears or goes).
+- **A `stat` every second** (`statEvery`, `Watcher.replaced`) for what is
+  replaced by a rename: the job records `jobs/<id>/state.json` of the sessions
+  that had a worker while this cav runs, `daemon/roster.json`, and cav's own
+  `unparked.json`. A file's stamp is its inode, size and modification time.
+  ⚠️ Do not put these files back under fsnotify. On kqueue it loses a file
+  that is replaced by a rename (reproduced: after 40 quick replaces of a
+  `state.json`, 5 of 5 later replaces gave no event; reviewers saw 76 of 120
+  single replaces give none). Setting the watch again by hand (`Remove` then
+  `Add`) raced fsnotify's own goroutine, which opens the new file too: each
+  race left one open file for good, 20 to 40 per hour per busy session. The
+  stat check costs a few system calls a second and opens nothing.
+
+The details that matter:
+- **One write, one refresh.** After an event the loop waits
+  `list.minRefreshMs` (`settle`) and takes the events that came meanwhile, so
+  it refreshes once and reads the finished file.
+- **`Watcher.Repair` runs before every refresh** and only adds a directory
+  that is not watched: `daemon/attach-journal` or `jobs` made after cav
+  started, a `sessions` directory that was removed and made again. cav never
+  removes a watch, and never adds a path that fsnotify adds by itself.
+  `NewWatcher` fails when it cannot watch `sessions/`, and cav then polls.
+- **A job is checked from the moment its worker shows in the records**, before
   the listing and the job files are read (`sessionSource.track`), and it stays
-  watched after the worker ends: claude still writes the last state then, and
-  fsnotify cannot give a directory back to its parent's watch (a job that was
-  dropped and later deleted gave no event). It is dropped when its directory
-  is gone. The cost is about 4 open files per such job.
+  checked after the worker ends, because claude still writes the last state
+  then. It is dropped when its directory is gone.
 - **Slow first event.** fsnotify opens every new file in a watched directory,
   and on this machine the first open of a new file can take 0.2 to 1.5s
   (measured at load 6). Events queue behind it, so a change right after a new
-  file can show that much later. Tests wait up to 5s for an event.
-- **What no file event covers** shows at the next refresh, so up to
+  record can show that much later. Tests wait up to 5s for an event.
+- **What neither part covers** shows at the next refresh, so up to
   `eventInterval` late: "N other cavs running", a worktree made outside cav,
   and the retry after a failed git scan.
 
@@ -714,8 +726,10 @@ visible at a glance.
   startup — Init fires `createCmd` alongside the first refresh; the session is
   highlighted once it registers, exactly like the TUI `n`. The name is
   **required** (`-n` without one exits 2, like every create path). With
-  `-a`/`--attach` the registration attaches instead (the `selectJobID` branch
-  consumes `attachNew` one-shot and calls `openCurrent`), so stepping out
+  `-a`/`--attach` the registration attaches instead, once the session has a
+  worker (`highlightNew` consumes `attachNew` one-shot and calls
+  `openCurrent`; a job is listed from its job record before its worker runs,
+  and opening it then would respawn a worker that is starting), so stepping out
   lands back in cav with it highlighted. `-a` anywhere among the args; `-a`
   without `-n` exits 2. No initial-prompt flag — the session starts idle.)
 
@@ -747,8 +761,8 @@ visible at a glance.
   | `list.statusTTLMs` | 6000 | how long a footer note lingers |
   | `list.minRefreshMs` | 250 | event mode: the wait after a file event before the refresh, so one write (several events) starts one refresh. Polling mode: the floor between polls |
   | `list.safetyPollMs` | 60000 | event mode: how often `claude agents` still runs as a cross-check, and the longest wait between refreshes (min 5000) |
-  | `list.idleAfterMs` | 60000 | polling mode only (no process records): no keypress for this long → idle poll backoff (0 disables) |
-  | `list.idleRefreshMs` | 10000 | polling mode: poll interval while idle (`zzz` in the header). Event mode: the longest wait between refreshes while auto-stop is on |
+  | `list.idleAfterMs` | 60000 | no keypress for this long means the user is away. Polling mode (no process records): the poll backs off. Both modes: the preview reloads every `list.idleRefreshMs`. `0` turns both off: with the preview open, `claude logs` then starts every `preview.refreshMs` for ever |
+  | `list.idleRefreshMs` | 10000 | polling mode: poll interval while idle (`zzz` in the header). Event mode: the longest wait between refreshes while auto-stop is on. Both modes: how often the preview reloads while the user is away |
   | `list.grouping` | `status-dir` | startup grouping: `dir-status`\|`status-dir`\|`recent`\|`alphabetical` (`o` cycles from there) |
   | `list.fuzzyFilter` | `true` | `/` also matches by subsequence (fuzzy); `false` = substring only |
   | `picker.maxDepth` | 8 | how deep the dir-picker walk descends |
@@ -829,8 +843,8 @@ prompt is optional (empty = idle). The session is then created and
 `claude.Create` parses the new job id out of `claude --bg`'s output
 (`backgrounded · <id> …`); a new session registers with the daemon
 asynchronously, so cav stashes that id (`selectJobID`) and moves the cursor to
-the session once it is listed (`showNew`: at once when a refresh already listed
-it before `claude --bg` returned, else at the refresh its files start).
+the session once it is listed (`highlightNew`: at once when a refresh already
+listed it before `claude --bg` returned, else at the refresh its files start).
 (`--bg` ignores `--session-id`, so we can't choose the id ourselves.)
 Every cav-created session is launched with an **explicit model/effort**
 (`createArgs`: `--model claude-fable-5-1 --effort max` by default, `newSession.*` in

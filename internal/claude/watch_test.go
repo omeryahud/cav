@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
 
-// watchedHome returns a home with the directories claude keeps, and a watcher on it.
+// watchedHome returns a home with the directories claude keeps, and a watcher
+// on it that checks the replaced files often.
 func watchedHome(t *testing.T, extra ...string) (root string, w *Watcher) {
 	t.Helper()
 	home := t.TempDir()
@@ -21,6 +23,9 @@ func watchedHome(t *testing.T, extra ...string) (root string, w *Watcher) {
 			t.Fatal(err)
 		}
 	}
+	orig := statEvery
+	statEvery = 20 * time.Millisecond
+	t.Cleanup(func() { statEvery = orig })
 	w, err := NewWatcher(extra...)
 	if err != nil {
 		t.Fatal(err)
@@ -68,19 +73,19 @@ func replace(t *testing.T, path string, n int) {
 	}
 }
 
-func isWatched(w *Watcher, dir string) bool {
-	for _, p := range w.fs.WatchList() {
-		if p == dir {
-			return true
-		}
+// openFiles counts this process's open file descriptors.
+func openFiles(t *testing.T) int {
+	t.Helper()
+	fds, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		t.Skip("cannot count open files here: " + err.Error())
 	}
-	return false
+	return len(fds)
 }
 
-// Which events are a change cav shows. No clock in this test.
+// Which fsnotify events are a change cav shows. No clock in this test.
 func TestWatcherMatters(t *testing.T) {
-	const marks = "/cfg/cav/unparked.json"
-	w := &Watcher{root: "/h/.claude", extra: map[string]bool{marks: true}}
+	w := &Watcher{sessions: "/h/.claude/sessions"}
 	for _, tc := range []struct {
 		name string
 		path string
@@ -90,21 +95,70 @@ func TestWatcherMatters(t *testing.T) {
 		{"a process record", "/h/.claude/sessions/123.json", fsnotify.Write, true},
 		{"a process record goes away", "/h/.claude/sessions/123.json", fsnotify.Remove, true},
 		{"a key file next to it", "/h/.claude/sessions/123.abc.key", fsnotify.Create, false},
-		{"the roster", "/h/.claude/daemon/roster.json", fsnotify.Create, true},
-		{"the roster's temp file", "/h/.claude/daemon/roster.json.tmp.1", fsnotify.Create, true},
-		{"another daemon file", "/h/.claude/daemon/control.key", fsnotify.Write, false},
 		{"an attach starts", "/h/.claude/daemon/attach-journal/gesture.json", fsnotify.Create, true},
 		{"a job appears", "/h/.claude/jobs/cccc0001", fsnotify.Create, true},
-		{"a job's record", "/h/.claude/jobs/aaaa0001/state.json", fsnotify.Create, true},
-		{"the temp file of a job's record", "/h/.claude/jobs/aaaa0001/state.json.tmp.9f", fsnotify.Create, true},
-		{"a job's timeline", "/h/.claude/jobs/aaaa0001/timeline.jsonl", fsnotify.Write, false},
+		{"a job goes", "/h/.claude/jobs/cccc0001", fsnotify.Remove, true},
 		{"a mode change", "/h/.claude/sessions/123.json", fsnotify.Chmod, false},
-		{"another cav's marks", marks, fsnotify.Create, true},
-		{"another file of cav's own", "/cfg/cav/seen.json", fsnotify.Write, false},
 	} {
 		if got := w.matters(fsnotify.Event{Name: tc.path, Op: tc.op}); got != tc.want {
 			t.Errorf("%s: matters = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// The stat check, with no clock and no goroutine: what counts as a change of
+// a file that is replaced by a rename.
+func TestWatcherChecksTheReplacedFiles(t *testing.T) {
+	root := t.TempDir()
+	job := filepath.Join(root, "jobs", "aaaa0001")
+	other := filepath.Join(root, "jobs", "bbbb0001")
+	for _, dir := range []string{job, other} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, roster := filepath.Join(job, "state.json"), filepath.Join(root, "daemon", "roster.json")
+	write(t, state, "{}")
+	w := &Watcher{sessions: filepath.Join(root, "sessions"), stamps: map[string]fileStamp{}, keep: map[string]bool{roster: true}}
+	w.stamps[roster] = stampOf(roster) // not there yet
+	w.TrackJobs([]string{"aaaa0001"})
+
+	if w.replaced() {
+		t.Error("nothing changed since the job was tracked")
+	}
+	replace(t, state, 1)
+	if !w.replaced() || w.replaced() {
+		t.Error("a replaced record must count as a change, once")
+	}
+	write(t, state, `{"written":"in place"}`)
+	if !w.replaced() {
+		t.Error("a record written in place must count too")
+	}
+	write(t, filepath.Join(other, "state.json"), "{}")
+	if w.replaced() {
+		t.Error("the record of a job with no worker is not checked")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(roster), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, roster, "{}")
+	if !w.replaced() {
+		t.Error("a roster that appears must count as a change")
+	}
+
+	w.TrackJobs([]string{"aaaa0001", "bbbb0001"}) // tracked twice: the stamp must stay
+	if err := os.RemoveAll(job); err != nil {
+		t.Fatal(err)
+	}
+	if !w.replaced() || len(w.stamps) != 2 {
+		t.Errorf("a deleted job must count as a change and leave the check: %d files checked, want the roster and one job", len(w.stamps))
+	}
+	if err := os.Remove(roster); err != nil {
+		t.Fatal(err)
+	}
+	if !w.replaced() || len(w.stamps) != 2 {
+		t.Error("the roster is checked also while it does not exist")
 	}
 }
 
@@ -137,61 +191,43 @@ func TestWatcherTellsWhenASessionChanges(t *testing.T) {
 	if !changed(w) {
 		t.Error("a record that goes away (the process ended) must count as a change")
 	}
-}
-
-// Only the jobs that had a worker are watched, and such a job stays watched.
-func TestWatcherTracksTheJobsWithAWorker(t *testing.T) {
-	root, w := watchedHome(t)
-	a, b := filepath.Join(root, "jobs", "aaaa0001"), filepath.Join(root, "jobs", "bbbb0001")
-	w.TrackJobs([]string{"aaaa0001", "gone0000"}) // gone0000 has no directory
-	if !isWatched(w, a) || isWatched(w, b) || len(w.jobs) != 1 {
-		t.Fatalf("watched: a = %v, b = %v, jobs = %v; want only a", isWatched(w, a), isWatched(w, b), w.jobs)
-	}
-
-	w.TrackJobs([]string{"bbbb0001"}) // a's worker ended
-	if !isWatched(w, a) || !isWatched(w, b) {
-		t.Error("a job whose worker ended must stay watched: claude still writes its last state")
-	}
-	write(t, filepath.Join(a, "state.json"), "{}")
-	if !changed(w) {
-		t.Error("the last state of an ended job must wake cav")
-	}
-
-	if err := os.RemoveAll(a); err != nil {
+	settle(w)
+	if err := os.RemoveAll(filepath.Join(root, "jobs", "bbbb0001")); err != nil {
 		t.Fatal(err)
 	}
 	if !changed(w) {
-		t.Error("a job that is deleted must wake cav")
-	}
-	settle(w)
-	w.Repair()
-	if w.jobs[a] || len(w.replaced) != 2 {
-		t.Errorf("a deleted job must be dropped: jobs = %v, replaced = %v", w.jobs, w.replaced)
+		t.Error("a job that is deleted must count as a change, also one with no worker")
 	}
 }
 
-// fsnotify on kqueue can stop following a file that is replaced by a rename
-// twice in a row. Repair, which every refresh runs, must bring the watch back.
-func TestWatcherRepairsALostRecordWatch(t *testing.T) {
+// fsnotify on kqueue can stop following a file that is replaced by a rename,
+// and a watch set again by hand leaked open files. The stat check has neither.
+func TestWatcherFollowsARecordThroughManyReplaces(t *testing.T) {
 	root, w := watchedHome(t)
 	state := filepath.Join(root, "jobs", "aaaa0001", "state.json")
 	write(t, state, "{}")
 	w.TrackJobs([]string{"aaaa0001"})
+	settle(w)
+	before := openFiles(t)
 
 	for i := 0; i < 40; i++ {
 		replace(t, state, i)
 		time.Sleep(20 * time.Millisecond)
+		w.Repair() // every refresh runs it
 	}
 	if !changed(w) {
 		t.Fatal("a burst of replaces must count as a change")
 	}
 	for i := 100; i < 104; i++ {
 		settle(w)
-		w.Repair()
 		replace(t, state, i)
 		if !changed(w) {
-			t.Fatalf("replace %d after the burst gave no token: the watch is lost", i)
+			t.Fatalf("replace %d after the burst gave no token: the record is not followed", i)
 		}
+	}
+	settle(w)
+	if after := openFiles(t); after != before {
+		t.Errorf("open files went from %d to %d over 44 replaces, want no change", before, after)
 	}
 }
 
@@ -228,9 +264,12 @@ func TestWatcherRepairsAMissingDirectory(t *testing.T) {
 	}
 	settle(w)
 	w.Repair()
+	if !slices.Contains(w.fs.WatchList(), sessions) {
+		t.Fatal("process records made again must be watched after a repair")
+	}
 	write(t, filepath.Join(sessions, "9.json"), "{}")
 	if !changed(w) {
-		t.Error("process records made again must be watched after a repair")
+		t.Error("a record in the new directory must count as a change")
 	}
 }
 
@@ -240,7 +279,6 @@ func TestWatcherTellsWhenAnExtraFileChanges(t *testing.T) {
 	write(t, marks, "[]")
 	_, w := watchedHome(t, marks)
 
-	write(t, filepath.Join(filepath.Dir(marks), "seen.json"), "{}")
 	replace(t, marks, 1)
 	if !changed(w) {
 		t.Error("a replaced extra file must count as a change")
@@ -261,10 +299,27 @@ func TestWatcherMergesABurst(t *testing.T) {
 	}
 }
 
+// With no watch on the process records cav must poll: a watcher that watches
+// nothing would leave it with no refresh at all.
 func TestNewWatcherFailsWithoutTheProcessRecords(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	if w, err := NewWatcher(); err == nil {
 		w.Close()
 		t.Error("with no sessions directory there is nothing to watch: want an error")
+	}
+
+	if os.Geteuid() == 0 {
+		return // root opens a directory of any mode
+	}
+	sessions := filepath.Join(home, ".claude", "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(sessions, 0)
+	t.Cleanup(func() { os.Chmod(sessions, 0o755) })
+	if w, err := NewWatcher(); err == nil {
+		w.Close()
+		t.Error("a sessions directory that cannot be opened: want an error")
 	}
 }

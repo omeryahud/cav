@@ -11,6 +11,7 @@ import (
 
 	"github.com/omeryahud/cav/internal/claude"
 	"github.com/omeryahud/cav/internal/config"
+	"github.com/omeryahud/cav/internal/unpark"
 )
 
 func jobsOf(sessions []claude.Session) []string {
@@ -268,8 +269,8 @@ func TestRefreshLoopWaitsForAChange(t *testing.T) {
 	}
 }
 
-// One write gives several events (a rename gives two). They must start one
-// refresh, after the write is done, not one each.
+// One write can give several events. They must start one refresh, after the
+// write is done, not one each.
 func TestWaitMergesTheEventsOfOneWrite(t *testing.T) {
 	changed := make(chan struct{}, 1)
 	l := config.Defaults().List
@@ -311,6 +312,32 @@ func TestWaitEndsOnRTheIntervalAndAStop(t *testing.T) {
 	close(stop)
 	if r.wait(true) {
 		t.Error("a stop must end the loop")
+	}
+}
+
+// Another cav saves its marks in unparked.json. That is no file of claude's,
+// so the loop must name it to the watcher, or the marks show a minute late.
+func TestRefreshLoopRefreshesWhenAnotherCavSavesItsMarks(t *testing.T) {
+	loopHome(t)
+	marks := unpark.Path()
+	if err := os.MkdirAll(filepath.Dir(marks), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stubLiveRecords(t, nil, true)
+	stubLiveSessions(t, nil, nil)
+	stubAttachTargets(t, nil, true)
+	l := config.Defaults().List
+	l.MinRefresh, l.SafetyPoll = time.Millisecond, time.Hour
+	next, _ := startLoop(t, l)
+	if _, ok := next(slowRefresh); !ok {
+		t.Fatal("no first refresh")
+	}
+
+	if err := os.WriteFile(marks, []byte(`["a-sid"]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := next(slowRefresh); !ok {
+		t.Error("another cav's marks must start a refresh")
 	}
 }
 

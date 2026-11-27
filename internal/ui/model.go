@@ -612,8 +612,8 @@ func (r *refresher) pollDelay() time.Duration {
 	return idleDelay(r.l, r.act.sinceInput())
 }
 
-// settle lets the other events of one write arrive: a record replaced by a
-// rename gives two, and a refresh must read the finished file.
+// settle lets the other events of one write arrive, so that one write starts
+// one refresh, and the refresh reads the finished file.
 func (r *refresher) settle() bool {
 	select {
 	case <-time.After(r.l.MinRefresh):

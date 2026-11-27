@@ -167,14 +167,29 @@ func parkedView() bool {
 	return false
 }
 
-// procStart returns when pid started, as claude writes it in a session file
-// (the UTC form of `ps -o lstart`), or "" when pid is not running. Tests stub it.
-var procStart = func(pid int) string {
-	cmd := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
+// procStarts returns when each pid started, as claude writes it in a session
+// file (the UTC form of `ps -o lstart`), with one ps for all. Tests stub it.
+var procStarts = func(pids []int) map[int]string {
+	list := make([]string, len(pids))
+	for i, pid := range pids {
+		list[i] = strconv.Itoa(pid)
+	}
+	cmd := exec.Command("ps", "-o", "pid=,lstart=", "-p", strings.Join(list, ","))
 	cmd.Env = append(os.Environ(), "TZ=UTC", "LC_ALL=C")
 	out, _ := cmd.Output()
-	return strings.Join(strings.Fields(string(out)), " ")
+	starts := make(map[int]string, len(pids))
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(line); len(f) > 1 {
+			if pid, err := strconv.Atoi(f[0]); err == nil {
+				starts[pid] = strings.Join(f[1:], " ")
+			}
+		}
+	}
+	return starts
 }
+
+// procStart returns when pid started, or "" when pid is not running.
+func procStart(pid int) string { return procStarts([]int{pid})[pid] }
 
 // sameProcess reports whether pid still is the process that wrote a record: a
 // record can outlive a crash, and the pid can go to another process.

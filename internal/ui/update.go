@@ -105,7 +105,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		if cmd := m.showNew(); cmd != nil {
+		m.retireClones()
+		m.recompute()
+		if cmd := m.highlightNew(); cmd != nil {
 			return m, tea.Batch(waitRefresh(m.refreshes), cmd)
 		}
 		// `cav -o <name>`: on the first refresh that has sessions, resolve the
@@ -205,7 +207,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// already: the refresh its files started may have come first.
 		m.status = "created " + msg.label
 		m.selectJobID = msg.jobID // "" if the id couldn't be parsed → just won't auto-select
-		return m, m.showNew()
+		return m, m.highlightNew()
 
 	case forkedMsg:
 		// Fork (F) or clone (C) created a new session continuing parentSID's
@@ -223,7 +225,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pendingClone[msg.childJobID] = msg.cloneName
 		m.selectJobID = msg.childJobID
-		return m, m.showNew()
+		m.retireClones()
+		m.recompute() // hides a fork that is listed under its parent's name already
+		return m, m.highlightNew()
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -251,19 +255,26 @@ func (m *Model) expireStatus() {
 	}
 }
 
-// showNew retires the clones that now carry their typed name and highlights
-// the new session once it is listed. For `cav -n -a` it returns the attach.
-func (m *Model) showNew() tea.Cmd {
-	// Retired, so a later rename by the user cannot hide the clone again.
+// retireClones forgets the clones that now carry their typed name, so a later
+// rename by the user cannot hide one again.
+func (m *Model) retireClones() {
 	for i := range m.all {
 		jid := m.roster[m.all[i].SessionID]
 		if want, ok := m.pendingClone[jid]; ok && m.displayName(m.all[i]) == want {
 			delete(m.pendingClone, jid)
 		}
 	}
-	m.recompute()
+}
+
+// highlightNew moves the cursor to the new session once it is listed. For
+// `cav -n -a` it waits for the worker and returns the attach.
+func (m *Model) highlightNew() tea.Cmd {
 	i := m.viewIndexByJobID(m.selectJobID)
 	if m.selectJobID == "" || i < 0 {
+		return nil
+	}
+	// Opening a session that has no worker yet would respawn one that starts.
+	if m.attachNew && !m.live[m.view[i].SessionID] {
 		return nil
 	}
 	m.cursor, m.previewScroll, m.selectJobID = i, 0, ""
